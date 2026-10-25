@@ -1,4 +1,4 @@
-# Folio v0.11
+# Folio v0.12
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
@@ -38,6 +38,11 @@ The eighth prototype provides:
 - Optional monochrome or color e-ink display mode.
 - Immersive fullscreen enabled automatically at launch.
 - Two-finger vertical swipes to hide or reveal the PDF toolbar.
+- A redesigned custom PDF toolbar matching the library theme.
+- Correct 100% completion for the final page.
+- Multiple PDF selection with return to the library instead of opening immediately.
+- Search icon integrated into the search field.
+- E-ink-aware collection cards and reversed dimming direction.
 - A persistent A-Z, Z-A, and recently opened sorting menu.
 - Recent-book ordering based on the last time each PDF was opened.
 - Search controls positioned in the top bar without covering the library content.
