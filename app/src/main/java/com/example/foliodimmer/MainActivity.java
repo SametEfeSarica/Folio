@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.Matrix;
 import android.graphics.pdf.PdfRenderer;
@@ -26,6 +27,8 @@ import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -68,6 +71,11 @@ public class MainActivity extends Activity {
     private FrameLayout setupOverlay;
     private FrameLayout root;
     private KindleHomeView kindleHome;
+    private EditText searchBar;
+    private SeekBar brightnessBar;
+    private boolean collectionMode;
+    private String activeCollection;
+    private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
 
     private static final int PICK_PDF = 40;
     private static final String PREFS = "folio_preferences";
@@ -77,6 +85,8 @@ public class MainActivity extends Activity {
     private static final String PAGE_PREFIX = "page_";
     private static final String LANGUAGE = "language";
     private static final String SETUP_DONE = "setup_done";
+    private static final String COLLECTIONS = "collections";
+    private static final String COLLECTION_PREFIX = "collection_";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -101,6 +111,40 @@ public class MainActivity extends Activity {
         kindleHome = new KindleHomeView(this);
         libraryPage.addView(kindleHome, new LinearLayout.LayoutParams(-1, -1));
         root.addView(libraryPage, new FrameLayout.LayoutParams(-1, -1));
+
+        searchBar = new EditText(this);
+        searchBar.setSingleLine(true);
+        searchBar.setTextSize(14);
+        searchBar.setHint(t("search_library"));
+        searchBar.setPadding(dp(12), 0, dp(12), 0);
+        searchBar.setVisibility(View.GONE);
+        searchBar.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (kindleHome != null) kindleHome.invalidate();
+            }
+            @Override public void afterTextChanged(Editable editable) { }
+        });
+        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(250), dp(42));
+        searchParams.leftMargin = dp(24);
+        searchParams.topMargin = dp(45);
+        root.addView(searchBar, searchParams);
+
+        brightnessBar = new SeekBar(this);
+        brightnessBar.setMax(80);
+        brightnessBar.setProgress(preferences.getInt(DIM_LEVEL, 0));
+        brightnessBar.setVisibility(View.GONE);
+        brightnessBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                updateDim(value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { }
+        });
+        FrameLayout.LayoutParams brightnessParams = new FrameLayout.LayoutParams(dp(210), dp(42));
+        brightnessParams.leftMargin = dp(118);
+        brightnessParams.topMargin = dp(8);
+        root.addView(brightnessBar, brightnessParams);
 
         pdfPreview = new ImageView(this);
         pdfPreview.setBackgroundColor(Color.WHITE);
@@ -358,7 +402,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) { }
             rememberPdf(data.getData());
             preferences.edit().putString(LAST_PDF, data.getData().toString()).apply();
-            tryOpenPdf(data.getData());
+            showCollectionDialog(data.getData());
         }
     }
 
@@ -368,6 +412,33 @@ public class MainActivity extends Activity {
         saved.add(uri.toString());
         preferences.edit().putStringSet(LIBRARY_URIS, saved).apply();
         rebuildLibrary();
+    }
+
+    private void showCollectionDialog(final Uri uri) {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(t("collection_hint"));
+        input.setPadding(dp(20), dp(8), dp(20), dp(8));
+        new AlertDialog.Builder(this).setTitle(t("choose_collection"))
+                .setMessage(t("collection_message"))
+                .setView(input)
+                .setPositiveButton(t("save"), (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (name.length() == 0) name = t("general");
+                    saveCollection(uri, name);
+                    tryOpenPdf(uri);
+                })
+                .setNegativeButton(t("skip"), (dialog, which) -> tryOpenPdf(uri))
+                .show();
+    }
+
+    private void saveCollection(Uri uri, String name) {
+        Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                new HashSet<String>()));
+        names.add(name);
+        preferences.edit().putStringSet(COLLECTIONS, names)
+                .putString(COLLECTION_PREFIX + uri.toString().hashCode(), name).apply();
+        if (kindleHome != null) kindleHome.invalidate();
     }
 
     private void rebuildLibrary() {
@@ -451,6 +522,8 @@ public class MainActivity extends Activity {
             currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
             currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
             libraryPage.setVisibility(View.GONE);
+            searchBar.setVisibility(View.GONE);
+            brightnessBar.setVisibility(View.GONE);
             readerBar.setVisibility(View.VISIBLE);
             toolbarVisible = true;
             pdfPreview.setVisibility(View.VISIBLE);
@@ -541,6 +614,8 @@ public class MainActivity extends Activity {
         readerBar.setVisibility(View.GONE);
         pdfPreview.setVisibility(View.GONE);
         libraryPage.setVisibility(View.VISIBLE);
+        if (searchBar != null) searchBar.setVisibility(View.GONE);
+        if (brightnessBar != null) brightnessBar.setVisibility(View.GONE);
         rebuildLibrary();
     }
 
@@ -607,20 +682,24 @@ public class MainActivity extends Activity {
 
             drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
                     26, 30, 12, Color.rgb(78, 71, 57), false);
-            drawText(canvas, "☼", width - 138, 31, 20, Color.rgb(70, 63, 50), false);
-            drawText(canvas, "⌁", width - 96, 31, 20, Color.rgb(70, 63, 50), false);
-            drawText(canvas, "⌕", width - 52, 31, 22, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "☼", width - 238, 31, 19, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "+", width - 194, 31, 21, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "⚙", width - 148, 31, 17, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "⛶", width - 102, 31, 17, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "⌕", width - 54, 31, 22, Color.rgb(70, 63, 50), false);
 
             drawText(canvas, t("books"), 28, 76, 16, Color.rgb(56, 49, 37), true);
-            drawText(canvas, t("authors"), 120, 76, 16, Color.rgb(108, 98, 80), false);
+            drawText(canvas, t("collections"), 120, 76, 16, Color.rgb(108, 98, 80), false);
             drawText(canvas, t("filter_all"), width - 128, 76, 13, Color.rgb(84, 76, 61), false);
             paint.setColor(Color.rgb(70, 63, 50));
             canvas.drawRect(26, 91, 93, 94, paint);
             paint.setColor(Color.rgb(192, 177, 143));
             canvas.drawRect(24, 106, width - 24, 107, paint);
 
-            drawText(canvas, t("library"), 28, 138, 27, Color.rgb(45, 40, 31), true);
-            drawText(canvas, t("search_library"), 28, 166, 14, Color.rgb(124, 111, 88), false);
+            drawText(canvas, collectionMode && activeCollection != null ? activeCollection : t("library"),
+                    28, 138, 27, Color.rgb(45, 40, 31), true);
+            drawText(canvas, searchBar != null && searchBar.getVisibility() == View.VISIBLE
+                    ? "" : t("search_library"), 28, 166, 14, Color.rgb(124, 111, 88), false);
             paint.setColor(Color.rgb(173, 157, 124));
             canvas.drawRect(26, 178, width - 26, 179, paint);
 
@@ -628,12 +707,31 @@ public class MainActivity extends Activity {
                     new HashSet<String>()));
             String last = preferences.getString(LAST_PDF, null);
             if (last != null && books.remove(last)) books.add(0, last);
+            if (searchBar != null && searchBar.getVisibility() == View.VISIBLE) {
+                String query = searchBar.getText().toString().trim().toLowerCase();
+                if (query.length() > 0) {
+                    ArrayList<String> filtered = new ArrayList<>();
+                    for (String book : books) {
+                        if (displayName(Uri.parse(book)).toLowerCase().contains(query)) filtered.add(book);
+                    }
+                    books = filtered;
+                }
+            }
+            if (collectionMode && activeCollection != null) {
+                ArrayList<String> filtered = new ArrayList<>();
+                for (String book : books) {
+                    if (activeCollection.equals(collectionFor(book))) filtered.add(book);
+                }
+                books = filtered;
+            }
             int left = 28;
             int top = 198;
             int gap = 16;
             int cardWidth = Math.max(dp(92), (width - 56 - gap * 2) / 3);
             int coverHeight = dp(148);
-            if (books.isEmpty()) {
+            if (collectionMode && activeCollection == null) {
+                drawCollections(canvas, left, top, cardWidth, coverHeight, width);
+            } else if (books.isEmpty()) {
                 drawText(canvas, t("empty_library"), 28, top + 45, 15, Color.rgb(113, 101, 80), false);
                 drawText(canvas, "+  " + t("open_pdf"), 28, top + 82, 15, Color.rgb(74, 63, 43), true);
             } else {
@@ -645,8 +743,14 @@ public class MainActivity extends Activity {
                     int y = top + row * (coverHeight + 74);
                     int[] colors = {Color.rgb(111, 74, 55), Color.rgb(196, 155, 92),
                             Color.rgb(96, 116, 105), Color.rgb(75, 87, 111)};
-                    paint.setColor(colors[i % colors.length]);
-                    canvas.drawRect(x, y, x + cardWidth, y + coverHeight, paint);
+                    Bitmap thumbnail = loadThumbnail(books.get(i));
+                    if (thumbnail != null) {
+                        canvas.drawBitmap(thumbnail, null, new RectF(x, y, x + cardWidth,
+                                y + coverHeight), paint);
+                    } else {
+                        paint.setColor(colors[i % colors.length]);
+                        canvas.drawRect(x, y, x + cardWidth, y + coverHeight, paint);
+                    }
                     drawText(canvas, "FOLIO", x + 8, y + 22, 9, Color.WHITE, true);
                     String title = displayName(Uri.parse(books.get(i))).replace("▸  ", "");
                     if (title.length() > 18) title = title.substring(0, 16) + "…";
@@ -666,15 +770,96 @@ public class MainActivity extends Activity {
                 }
             }
 
-            paint.setColor(Color.rgb(190, 174, 140));
-            canvas.drawRect(0, height - 74, width, height - 73, paint);
-            drawText(canvas, "▤", width / 6 - 7, height - 46, 20, Color.rgb(67, 85, 91), true);
-            drawText(canvas, t("library"), width / 6 - 30, height - 20, 11, Color.rgb(67, 85, 91), false);
-            drawText(canvas, "◉", width / 2 - 7, height - 46, 18, Color.rgb(101, 91, 72), false);
-            drawText(canvas, t("discover"), width / 2 - 25, height - 20, 11, Color.rgb(101, 91, 72), false);
-            drawText(canvas, "☰", width * 5 / 6 - 8, height - 46, 18, Color.rgb(101, 91, 72), false);
-            drawText(canvas, t("more"), width * 5 / 6 - 23, height - 20, 11, Color.rgb(101, 91, 72), false);
             canvas.restore();
+        }
+
+        private ArrayList<String> visibleBooks() {
+            ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                    new HashSet<String>()));
+            String last = preferences.getString(LAST_PDF, null);
+            if (last != null && books.remove(last)) books.add(0, last);
+            if (searchBar != null && searchBar.getVisibility() == View.VISIBLE) {
+                String query = searchBar.getText().toString().trim().toLowerCase();
+                if (query.length() > 0) {
+                    ArrayList<String> filtered = new ArrayList<>();
+                    for (String book : books) {
+                        if (displayName(Uri.parse(book)).toLowerCase().contains(query)) filtered.add(book);
+                    }
+                    books = filtered;
+                }
+            }
+            if (collectionMode && activeCollection != null) {
+                ArrayList<String> filtered = new ArrayList<>();
+                for (String book : books) if (activeCollection.equals(collectionFor(book))) filtered.add(book);
+                books = filtered;
+            }
+            return books;
+        }
+
+        private ArrayList<String> collectionNames() {
+            Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                    new HashSet<String>()));
+            for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
+                names.add(collectionFor(book));
+            }
+            ArrayList<String> result = new ArrayList<>(names);
+            Collections.sort(result);
+            return result;
+        }
+
+        private String collectionFor(String bookUri) {
+            String value = preferences.getString(COLLECTION_PREFIX + bookUri.hashCode(), null);
+            return value == null ? t("general") : value;
+        }
+
+        private void drawCollections(Canvas canvas, int left, int top, int cardWidth,
+                                     int coverHeight, int width) {
+            Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                    new HashSet<String>()));
+            Set<String> books = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
+            for (String book : books) names.add(collectionFor(book));
+            if (names.isEmpty()) {
+                drawText(canvas, t("empty_collections"), left, top + 46, 15,
+                        Color.rgb(113, 101, 80), false);
+                return;
+            }
+            ArrayList<String> folders = new ArrayList<>(names);
+            Collections.sort(folders);
+            int folderWidth = (width - 56 - 16) / 2;
+            for (int i = 0; i < folders.size(); i++) {
+                int x = left + (i % 2) * (folderWidth + 16);
+                int y = top + (i / 2) * 112;
+                paint.setColor(Color.rgb(232, 218, 181));
+                canvas.drawRect(x, y, x + folderWidth, y + 92, paint);
+                drawText(canvas, "▰", x + 14, y + 34, 20, Color.rgb(112, 91, 55), true);
+                drawText(canvas, folders.get(i), x + 14, y + 61, 14, Color.rgb(71, 59, 43), true);
+                int count = 0;
+                for (String book : books) if (folders.get(i).equals(collectionFor(book))) count++;
+                drawText(canvas, count + " " + t("books_count"), x + 14, y + 81, 11,
+                        Color.rgb(120, 104, 77), false);
+            }
+        }
+
+        private Bitmap loadThumbnail(String bookUri) {
+            if (thumbnailCache.containsKey(bookUri)) return thumbnailCache.get(bookUri);
+            try {
+                ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(Uri.parse(bookUri), "r");
+                PdfRenderer pdf = new PdfRenderer(descriptor);
+                PdfRenderer.Page page = pdf.openPage(0);
+                int width = 180;
+                int height = Math.max(220, (int) (width * ((float) page.getHeight() / page.getWidth())));
+                Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                bitmap.eraseColor(Color.WHITE);
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                page.close();
+                pdf.close();
+                descriptor.close();
+                thumbnailCache.put(bookUri, bitmap);
+                return bitmap;
+            } catch (Exception error) {
+                thumbnailCache.put(bookUri, null);
+                return null;
+            }
         }
 
         private void drawText(Canvas canvas, String value, float x, float y, float size,
@@ -694,24 +879,58 @@ public class MainActivity extends Activity {
                 float density = getResources().getDisplayMetrics().density;
                 float x = event.getX() / density; float y = event.getY() / density;
                 float width = getWidth() / density; float height = getHeight() / density;
-                if (y < 58 && x > width - 180 && x < width - 100) {
-                    showBrightnessDialog(); return true;
+                if (y < 58 && x > width - 260 && x < width - 210) {
+                    brightnessBar.setVisibility(brightnessBar.getVisibility() == View.VISIBLE
+                            ? View.GONE : View.VISIBLE);
+                    return true;
                 }
-                if (y < 58 && x > width - 78) {
+                if (y < 58 && x > width - 210 && x < width - 165) {
                     pickPdf(); return true;
                 }
-                if (y > height - 82 && x > width * 0.66f) {
+                if (y < 58 && x > width - 165 && x < width - 120) {
                     showLanguageDialog(); return true;
+                }
+                if (y < 58 && x > width - 120 && x < width - 76) {
+                    immersive = !immersive;
+                    applyImmersiveMode(); return true;
+                }
+                if (y < 58 && x > width - 76) {
+                    searchBar.setVisibility(searchBar.getVisibility() == View.VISIBLE
+                            ? View.GONE : View.VISIBLE);
+                    if (searchBar.getVisibility() == View.VISIBLE) {
+                        searchBar.requestFocus();
+                        ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                                .showSoftInput(searchBar, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+                    }
+                    return true;
+                }
+                if (y > 55 && y < 105 && x > 100 && x < 260) {
+                    collectionMode = true;
+                    activeCollection = null;
+                    invalidate(); return true;
+                }
+                if (y > 55 && y < 105 && x < 105) {
+                    collectionMode = false;
+                    activeCollection = null;
+                    invalidate(); return true;
+                }
+                if (y > 190 && y < 620 && collectionMode && activeCollection == null) {
+                    ArrayList<String> folders = collectionNames();
+                    int folderWidth = (int) ((width - 56 - 16) / 2);
+                    int index = Math.max(0, (int) ((y - 198) / 112)) * 2
+                            + Math.max(0, Math.min(1, (int) ((x - 28) / (folderWidth + 16))));
+                    if (index < folders.size()) {
+                        activeCollection = folders.get(index);
+                        invalidate();
+                    }
+                    return true;
                 }
                 if (y > 190 && y < 620) {
                     int cardWidth = Math.max(92, (int) ((width - 56 - 16 * 2) / 3));
                     int column = Math.max(0, Math.min(2, (int) ((x - 28) / (cardWidth + 16))));
                     int row = Math.max(0, (int) ((y - 198) / (148 + 74)));
                     int index = row * 3 + column;
-                    ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
-                            new HashSet<String>()));
-                    String last = preferences.getString(LAST_PDF, null);
-                    if (last != null && books.remove(last)) books.add(0, last);
+                    ArrayList<String> books = visibleBooks();
                     if (index >= 0 && index < books.size()) tryOpenPdf(Uri.parse(books.get(index)));
                     else if (books.isEmpty()) pickPdf();
                     return true;
@@ -802,6 +1021,7 @@ public class MainActivity extends Activity {
         if ("quiet_page".equals(key)) return english ? "A quiet page" : "Sessiz bir sayfa";
         if ("adjust_light".equals(key)) return english ? "Adjust the light before you read." : "Okumadan önce ışığı ayarla.";
         if ("books".equals(key)) return english ? "Books" : "Kitaplar";
+        if ("collections".equals(key)) return english ? "Collections" : "Koleksiyonlar";
         if ("authors".equals(key)) return english ? "Authors" : "Yazarlar";
         if ("filter_all".equals(key)) return english ? "Filter: All" : "Filtrele: Tümü";
         if ("extra_dim".equals(key)) return english ? "Extra dim" : "Ekstra karartma";
@@ -811,6 +1031,16 @@ public class MainActivity extends Activity {
         if ("more".equals(key)) return english ? "More" : "Daha fazla";
         if ("empty_library".equals(key)) return english ? "Your books will appear here." : "Kitapların burada görünecek.";
         if ("pdf_document".equals(key)) return english ? "PDF document" : "PDF belgesi";
+        if ("read".equals(key)) return english ? "read" : "okundu";
+        if ("new_book".equals(key)) return english ? "New" : "Yeni";
+        if ("general".equals(key)) return english ? "General" : "Genel";
+        if ("empty_collections".equals(key)) return english ? "Create a collection when adding a PDF." : "PDF eklerken bir koleksiyon oluştur.";
+        if ("books_count".equals(key)) return english ? "books" : "kitap";
+        if ("choose_collection".equals(key)) return english ? "Add to a collection" : "Koleksiyona ekle";
+        if ("collection_message".equals(key)) return english ? "Name a folder for this PDF." : "Bu PDF için bir klasör adı yaz.";
+        if ("collection_hint".equals(key)) return english ? "Collection name" : "Koleksiyon adı";
+        if ("save".equals(key)) return english ? "Save" : "Kaydet";
+        if ("skip".equals(key)) return english ? "Skip" : "Atla";
         if ("brightness".equals(key)) return english ? "Brightness" : "Parlaklık";
         if ("brightness_hint".equals(key)) return english ? "Adjust extra dim for comfortable reading." : "Rahat okuma için karartma seviyesini ayarla.";
         if ("done".equals(key)) return english ? "Done" : "Tamam";
