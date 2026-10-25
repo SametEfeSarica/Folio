@@ -44,6 +44,7 @@ import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import java.util.Comparator;
 
 public class MainActivity extends Activity {
@@ -135,6 +136,8 @@ public class MainActivity extends Activity {
         searchBar.setHint(t("search_library"));
         searchBar.setPadding(dp(12), 0, dp(12), 0);
         searchBar.setVisibility(View.VISIBLE);
+        searchBar.setCompoundDrawablesWithIntrinsicBounds(new SearchDrawable(), null, null, null);
+        searchBar.setCompoundDrawablePadding(dp(6));
         searchBar.setCursorVisible(false);
         searchBar.setOnFocusChangeListener((view, hasFocus) -> searchBar.setCursorVisible(hasFocus));
         searchBar.addTextChangedListener(new TextWatcher() {
@@ -180,39 +183,10 @@ public class MainActivity extends Activity {
         previewParams.setMargins(dp(16), dp(84), dp(16), dp(16));
         root.addView(pdfPreview, previewParams);
 
-        LinearLayout reader = new LinearLayout(this);
+        ReaderToolbarView reader = new ReaderToolbarView(this);
         readerBar = reader;
-        reader.setGravity(Gravity.CENTER_VERTICAL);
-        reader.setPadding(dp(12), dp(4), dp(12), dp(4));
-        reader.setBackgroundColor(Color.rgb(232, 230, 222));
-        Button previous = premiumIconButton("‹");
-        previous.setOnClickListener(view -> showPage(currentPage - 1));
-        reader.addView(previous, new LinearLayout.LayoutParams(dp(40), dp(50)));
-        LinearLayout pageControl = new LinearLayout(this);
-        pageControl.setOrientation(LinearLayout.VERTICAL);
-        pageControl.setGravity(Gravity.CENTER);
-        pageLabel = text("0 / 0", 15, Color.rgb(45, 42, 35));
-        pageLabel.setGravity(Gravity.CENTER);
-        pageControl.addView(pageLabel, new LinearLayout.LayoutParams(-1, dp(24)));
-        pageSeekBar = new SeekBar(this);
-        pageSeekBar.setMax(1);
-        pageSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                if (fromUser) showPage(value);
-            }
-            @Override public void onStartTrackingTouch(SeekBar bar) { }
-            @Override public void onStopTrackingTouch(SeekBar bar) { }
-        });
-        pageControl.addView(pageSeekBar, new LinearLayout.LayoutParams(-1, dp(34)));
-        reader.addView(pageControl, new LinearLayout.LayoutParams(0, dp(50), 1));
-        Button next = premiumIconButton("›");
-        next.setOnClickListener(view -> showPage(currentPage + 1));
-        reader.addView(next, new LinearLayout.LayoutParams(dp(40), dp(50)));
-        Button close = premiumIconButton("×");
-        close.setOnClickListener(view -> closeReader());
-        reader.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40)));
         reader.setVisibility(View.GONE);
-        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(60), Gravity.TOP));
+        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(64), Gravity.TOP));
         pdfPreview.setOnTouchListener(createPdfTouchListener());
 
         dimOverlay = new View(this);
@@ -423,14 +397,27 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == PICK_PDF && resultCode == RESULT_OK && data != null && data.getData() != null) {
-            try {
-                getContentResolver().takePersistableUriPermission(data.getData(),
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            } catch (Exception ignored) { }
-            rememberPdf(data.getData());
-            preferences.edit().putString(LAST_PDF, data.getData().toString()).apply();
-            showCollectionDialog(data.getData());
+        if (requestCode == PICK_PDF && resultCode == RESULT_OK && data != null) {
+            ArrayList<Uri> selected = new ArrayList<>();
+            if (data.getClipData() != null) {
+                for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                    selected.add(data.getClipData().getItemAt(i).getUri());
+                }
+            } else if (data.getData() != null) {
+                selected.add(data.getData());
+            }
+            for (Uri uri : selected) {
+                try {
+                    getContentResolver().takePersistableUriPermission(uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) { }
+                rememberPdf(uri);
+                saveCollection(uri, t("general"));
+            }
+            if (!selected.isEmpty()) {
+                preferences.edit().putString(LAST_PDF, selected.get(0).toString()).apply();
+                if (kindleHome != null) kindleHome.invalidate();
+            }
         }
     }
 
@@ -557,6 +544,7 @@ public class MainActivity extends Activity {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                 | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         intent.setType("application/pdf");
         startActivityForResult(intent, PICK_PDF);
     }
@@ -571,7 +559,7 @@ public class MainActivity extends Activity {
                     .putInt("count_" + currentUri.hashCode(), renderer.getPageCount())
                     .putLong(OPENED_PREFIX + currentUri.hashCode(), System.currentTimeMillis())
                     .apply();
-            pageSeekBar.setMax(Math.max(1, renderer.getPageCount() - 1));
+            if (pageSeekBar != null) pageSeekBar.setMax(Math.max(1, renderer.getPageCount() - 1));
             currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
             currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
             libraryPage.setVisibility(View.GONE);
@@ -605,11 +593,12 @@ public class MainActivity extends Activity {
         pageBitmap = bitmap;
         pdfPreview.setImageBitmap(pageBitmap);
         pdfPreview.setColorFilter(isColorMode() ? null : eInkFilter());
-        pageLabel.setText((currentPage + 1) + " / " + renderer.getPageCount());
+        if (pageLabel != null) pageLabel.setText((currentPage + 1) + " / " + renderer.getPageCount());
         if (pageSeekBar != null) pageSeekBar.setProgress(currentPage);
         pdfPreview.post(new Runnable() {
             @Override public void run() { fitPage(); }
         });
+        if (readerBar != null) readerBar.invalidate();
     }
 
     private void fitPage() {
@@ -695,6 +684,130 @@ public class MainActivity extends Activity {
         float total = 0;
         for (int i = 0; i < event.getPointerCount(); i++) total += event.getY(i);
         return total / Math.max(1, event.getPointerCount());
+    }
+
+    private class ReaderToolbarView extends View {
+        private final Paint toolbarPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float downX;
+        private boolean dragging;
+
+        ReaderToolbarView(android.content.Context context) {
+            super(context);
+            setBackgroundColor(Color.rgb(232, 230, 222));
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            float density = getResources().getDisplayMetrics().density;
+            canvas.save();
+            canvas.scale(density, density);
+            float width = getWidth() / density;
+            toolbarPaint.setStyle(Paint.Style.FILL);
+            toolbarPaint.setColor(Color.rgb(232, 230, 222));
+            canvas.drawRect(0, 0, width, getHeight() / density, toolbarPaint);
+            toolbarPaint.setTypeface(Typeface.create("serif", Typeface.BOLD));
+            toolbarPaint.setTextSize(15);
+            toolbarPaint.setColor(Color.rgb(55, 53, 48));
+            toolbarPaint.setTextAlign(Paint.Align.CENTER);
+            int total = renderer == null ? 0 : renderer.getPageCount();
+            canvas.drawText(total == 0 ? "0 / 0" : (currentPage + 1) + " / " + total,
+                    width / 2f, 21, toolbarPaint);
+
+            toolbarPaint.setColor(Color.rgb(100, 98, 91));
+            toolbarPaint.setStrokeWidth(1.5f);
+            float left = 76;
+            float right = width - 108;
+            canvas.drawLine(left, 47, right, 47, toolbarPaint);
+            if (total > 1) {
+                float knob = left + (right - left) * currentPage / (float) (total - 1);
+                toolbarPaint.setColor(Color.rgb(63, 61, 55));
+                canvas.drawCircle(knob, 47, 6, toolbarPaint);
+            }
+            drawReaderButton(canvas, 14, 30, false);
+            drawReaderButton(canvas, width - 62, 30, true);
+            toolbarPaint.setStyle(Paint.Style.STROKE);
+            toolbarPaint.setStrokeWidth(2);
+            toolbarPaint.setColor(Color.rgb(55, 53, 48));
+            canvas.drawLine(width - 28, 29, width - 18, 39, toolbarPaint);
+            canvas.drawLine(width - 18, 29, width - 28, 39, toolbarPaint);
+            toolbarPaint.setStyle(Paint.Style.FILL);
+            canvas.restore();
+        }
+
+        private void drawReaderButton(Canvas canvas, float x, float y, boolean next) {
+            toolbarPaint.setStyle(Paint.Style.FILL);
+            toolbarPaint.setColor(Color.rgb(220, 218, 211));
+            canvas.drawRoundRect(new RectF(x, y - 24, x + 40, y + 16), 6, 6, toolbarPaint);
+            toolbarPaint.setStyle(Paint.Style.STROKE);
+            toolbarPaint.setStrokeWidth(2);
+            toolbarPaint.setColor(Color.rgb(55, 53, 48));
+            if (next) {
+                canvas.drawLine(x + 16, y - 5, x + 22, y, toolbarPaint);
+                canvas.drawLine(x + 22, y, x + 16, y + 5, toolbarPaint);
+            } else {
+                canvas.drawLine(x + 24, y - 5, x + 18, y, toolbarPaint);
+                canvas.drawLine(x + 18, y, x + 24, y + 5, toolbarPaint);
+            }
+            toolbarPaint.setStyle(Paint.Style.FILL);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            float density = getResources().getDisplayMetrics().density;
+            float x = event.getX() / density;
+            float y = event.getY() / density;
+            float width = getWidth() / density;
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                downX = x;
+                dragging = y > 28 && y < 60 && x > 60 && x < width - 90;
+                if (dragging) seekTo(x, width);
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_MOVE && dragging) {
+                seekTo(x, width);
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                dragging = false;
+                if (Math.abs(x - downX) < 10 && y < 60) {
+                    if (x < 65) showPage(currentPage - 1);
+                    else if (x > width - 92 && x < width - 48) showPage(currentPage + 1);
+                    else if (x >= width - 48) closeReader();
+                }
+                return true;
+            }
+            return true;
+        }
+
+        private void seekTo(float x, float width) {
+            if (renderer == null || renderer.getPageCount() < 2) return;
+            float ratio = Math.max(0, Math.min(1, (x - 76) / (width - 184)));
+            showPage(Math.round(ratio * (renderer.getPageCount() - 1)));
+        }
+    }
+
+    private static class SearchDrawable extends Drawable {
+        private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        SearchDrawable() {
+            iconPaint.setColor(Color.rgb(65, 63, 57));
+            iconPaint.setStyle(Paint.Style.STROKE);
+            iconPaint.setStrokeWidth(2.2f);
+        }
+
+        @Override public void draw(Canvas canvas) {
+            RectF bounds = new RectF(getBounds());
+            float cx = bounds.left + 9;
+            float cy = bounds.centerY() - 1;
+            canvas.drawCircle(cx, cy, 5, iconPaint);
+            canvas.drawLine(cx + 4, cy + 4, cx + 9, cy + 9, iconPaint);
+        }
+
+        @Override public void setAlpha(int alpha) { iconPaint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
+            iconPaint.setColorFilter(filter);
+        }
+        @Override public int getOpacity() { return -3; }
+        @Override public int getIntrinsicWidth() { return 20; }
+        @Override public int getIntrinsicHeight() { return 20; }
     }
 
     private void closeReader() {
@@ -784,7 +897,6 @@ public class MainActivity extends Activity {
 
             drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
                     26, 30, 12, Color.rgb(78, 71, 57), false);
-            drawIconButton(canvas, 108, 8, "⌕");
             drawIconButton(canvas, width - 160, 8, "☼");
             drawIconButton(canvas, width - 115, 8, "+");
             drawIconButton(canvas, width - 70, 8, "⚙");
@@ -845,14 +957,15 @@ public class MainActivity extends Activity {
                     drawText(canvas, title, x + 8, y + coverHeight - 18, 11, Color.rgb(245, 244, 239), true);
                     int total = preferences.getInt("count_" + books.get(i).hashCode(), 0);
                     int page = preferences.getInt(PAGE_PREFIX + books.get(i).hashCode(), 0);
-                    drawText(canvas, total > 0 ? "%" + Math.min(99, ((page + 1) * 100) / total) + " " + t("read") : t("new_book"),
+                    int percent = total > 0 ? (page >= total - 1 ? 100 : ((page + 1) * 100) / total) : 0;
+                    drawText(canvas, total > 0 ? "%" + percent + " " + t("read") : t("new_book"),
                             x, y + coverHeight + 22, 12, Color.rgb(75, 73, 67), false);
                     paint.setColor(Color.rgb(145, 142, 133));
                     canvas.drawRect(x, y + coverHeight + 32, x + cardWidth, y + coverHeight + 35, paint);
                     if (total > 0) {
                         paint.setColor(Color.rgb(70, 68, 63));
                         canvas.drawRect(x, y + coverHeight + 32,
-                                x + (cardWidth * Math.min(100, ((page + 1) * 100) / total) / 100),
+                                x + (cardWidth * percent / 100),
                                 y + coverHeight + 35, paint);
                     }
                 }
@@ -942,7 +1055,7 @@ public class MainActivity extends Activity {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRect(width - 270, 54, width - 22, 166, paint);
+            canvas.drawRect(width - 270, 54, width - 22, 146, paint);
             drawText(canvas, t("brightness"), width - 246, 82, 16,
                     Color.rgb(54, 53, 49), true);
             drawText(canvas, preferences.getInt(DIM_LEVEL, 0) + "%", width - 70, 82, 13,
@@ -950,12 +1063,10 @@ public class MainActivity extends Activity {
             paint.setColor(Color.rgb(80, 78, 71));
             paint.setStrokeWidth(2);
             canvas.drawLine(width - 246, 118, width - 46, 118, paint);
-            float knob = width - 246 + 200 * Math.min(80,
-                    preferences.getInt(DIM_LEVEL, 0)) / 80f;
+            float knob = width - 246 + 200 * (80 - Math.min(80,
+                    preferences.getInt(DIM_LEVEL, 0))) / 80f;
             paint.setColor(Color.rgb(55, 53, 48));
             canvas.drawCircle(knob, 118, 7, paint);
-            drawText(canvas, t("brightness_hint"), width - 246, 148, 11,
-                    Color.rgb(112, 109, 101), false);
         }
 
         private void drawSettingsPanel(Canvas canvas, int width) {
@@ -964,8 +1075,7 @@ public class MainActivity extends Activity {
             paint.setColor(Color.rgb(239, 237, 230));
             canvas.drawRect(width - 270, 54, width - 22, 318, paint);
             drawText(canvas, t("settings"), width - 246, 82, 16, Color.rgb(54, 53, 49), true);
-            drawText(canvas, t("language") + (languageExpanded ? "  ˄" : "  ˅"),
-                    width - 246, 116, 14, Color.rgb(61, 60, 55), true);
+            drawText(canvas, t("language"), width - 246, 116, 14, Color.rgb(61, 60, 55), true);
             int colorTop = 148;
             if (languageExpanded) {
                 drawText(canvas, "Türkçe", width - 220, 148, 14,
@@ -976,8 +1086,7 @@ public class MainActivity extends Activity {
                         "en".equals(language));
                 colorTop = 214;
             }
-            drawText(canvas, t("colors") + (colorExpanded ? "  ˄" : "  ˅"),
-                    width - 246, colorTop, 14, Color.rgb(61, 60, 55), true);
+            drawText(canvas, t("colors"), width - 246, colorTop, 14, Color.rgb(61, 60, 55), true);
             if (colorExpanded) {
                 drawText(canvas, t("mono_color"), width - 220, colorTop + 32, 14,
                         isColorMode() ? Color.rgb(130, 127, 119) : Color.rgb(45, 44, 40),
@@ -1006,9 +1115,11 @@ public class MainActivity extends Activity {
             for (int i = 0; i < folders.size(); i++) {
                 int x = left + (i % 2) * (folderWidth + 16);
                 int y = top + (i / 2) * 112;
-                paint.setColor(Color.rgb(232, 218, 181));
-                canvas.drawRect(x, y, x + folderWidth, y + 92, paint);
-                drawText(canvas, "▰", x + 14, y + 34, 20, Color.rgb(112, 91, 55), true);
+                paint.setColor(isColorMode() ? Color.rgb(218, 201, 165) : Color.rgb(214, 212, 204));
+                canvas.drawRoundRect(new RectF(x, y, x + folderWidth, y + 92), 6, 6, paint);
+                paint.setColor(isColorMode() ? Color.rgb(133, 106, 63) : Color.rgb(91, 89, 83));
+                canvas.drawRect(x + 14, y + 27, x + 35, y + 43, paint);
+                canvas.drawRect(x + 16, y + 23, x + 27, y + 29, paint);
                 drawText(canvas, folders.get(i), x + 14, y + 61, 14, Color.rgb(71, 59, 43), true);
                 int count = 0;
                 for (String book : books) if (folders.get(i).equals(collectionFor(book))) count++;
@@ -1119,7 +1230,7 @@ public class MainActivity extends Activity {
                 if (brightnessPanel) {
                     if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
                         int value = Math.max(0, Math.min(80,
-                                Math.round((x - (width - 246)) / 200f * 80f)));
+                                Math.round(((width - 46) - x) / 200f * 80f)));
                         updateDim(value);
                     }
                     brightnessPanel = false;
@@ -1190,15 +1301,6 @@ public class MainActivity extends Activity {
                     colorExpanded = false;
                     searchBar.clearFocus();
                     invalidate(); return true;
-                }
-                if (y < 58 && x >= 96 && x < 148) {
-                    brightnessPanel = false;
-                    searchBar.setVisibility(View.VISIBLE);
-                    searchBar.requestFocus();
-                    searchBar.setCursorVisible(true);
-                    ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
-                            .showSoftInput(searchBar, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
-                    return true;
                 }
                 if (y > 55 && y < 105 && x > width - 180) {
                     sortPanel = !sortPanel;
@@ -1358,8 +1460,8 @@ public class MainActivity extends Activity {
         if ("sort_recent".equals(key)) return english ? "Recently opened" : "Son açılanlar";
         if ("settings".equals(key)) return english ? "Settings" : "Ayarlar";
         if ("colors".equals(key)) return english ? "Display colors" : "Renkler";
-        if ("mono_color".equals(key)) return english ? "Black and white" : "Siyah beyaz e-ink";
-        if ("color_color".equals(key)) return english ? "Color e-ink" : "Renkli e-ink";
+        if ("mono_color".equals(key)) return english ? "Original" : "Orijinal";
+        if ("color_color".equals(key)) return english ? "Color" : "Renkli";
         if ("new_collection".equals(key)) return english ? "New collection" : "Yeni koleksiyon";
         if ("new_collection_message".equals(key)) return english ? "Name this collection." : "Bu koleksiyona bir ad ver.";
         if ("cancel".equals(key)) return english ? "Cancel" : "İptal";
