@@ -636,6 +636,7 @@ public class MainActivity extends Activity {
         });
         return new View.OnTouchListener() {
             @Override public boolean onTouch(View view, MotionEvent event) {
+                scaleDetector.onTouchEvent(event);
                 if (event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN
                         && event.getPointerCount() >= 2) {
                     multiGesture = true;
@@ -644,6 +645,10 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (multiGesture) {
+                    if (scaleDetector.isInProgress()) {
+                        multiGesture = false;
+                        return true;
+                    }
                     if (event.getActionMasked() == MotionEvent.ACTION_MOVE
                             && event.getPointerCount() >= 2) {
                         multiLastY = averagePointerY(event);
@@ -660,7 +665,6 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
-                scaleDetector.onTouchEvent(event);
                 if (event.getPointerCount() == 1 && !scaleDetector.isInProgress()) {
                     if (event.getAction() == MotionEvent.ACTION_DOWN) {
                         lastTouchX = event.getX(); lastTouchY = event.getY();
