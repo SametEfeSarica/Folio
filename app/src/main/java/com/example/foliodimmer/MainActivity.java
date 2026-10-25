@@ -419,6 +419,12 @@ public class MainActivity extends Activity {
         return view;
     }
 
+    private Button button(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        return button;
+    }
+
     private Button smallButton(String label) {
         Button button = new Button(this);
         button.setText(label);
