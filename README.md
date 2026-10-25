@@ -1,4 +1,4 @@
-# Folio v0.9
+# Folio v0.10
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
@@ -31,6 +31,9 @@ The eighth prototype provides:
 - Collection assignment when adding a PDF.
 - Real first-page thumbnails for books in the library.
 - A direct inline brightness seekbar instead of a separate brightness window.
+- In-place Kindle-style settings and sorting panels without white modal dialogs.
+- Functional collection creation, folder browsing, and back navigation.
+- A single low-saturation e-ink visual theme across library and reader controls.
 - A persistent A-Z, Z-A, and recently opened sorting menu.
 - Recent-book ordering based on the last time each PDF was opened.
 - Search controls positioned in the top bar without covering the library content.
