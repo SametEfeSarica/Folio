@@ -5,7 +5,9 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.Matrix;
 import android.graphics.pdf.PdfRenderer;
@@ -64,6 +66,7 @@ public class MainActivity extends Activity {
     private String language;
     private FrameLayout setupOverlay;
     private FrameLayout root;
+    private KindleHomeView kindleHome;
 
     private static final int PICK_PDF = 40;
     private static final String PREFS = "folio_preferences";
@@ -85,14 +88,56 @@ public class MainActivity extends Activity {
         setContentView(createScreen());
         updateDim(preferences.getInt(DIM_LEVEL, 0));
         rebuildLibrary();
-        String savedPdf = preferences.getString(LAST_PDF, null);
-        if (savedPdf != null) {
-            tryOpenPdf(Uri.parse(savedPdf));
-        }
         if (!preferences.getBoolean(SETUP_DONE, false)) showSetup();
     }
 
     private View createScreen() {
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.rgb(244, 232, 201));
+
+        libraryPage = new LinearLayout(this);
+        libraryPage.setOrientation(LinearLayout.VERTICAL);
+        kindleHome = new KindleHomeView(this);
+        libraryPage.addView(kindleHome, new LinearLayout.LayoutParams(-1, -1));
+        root.addView(libraryPage, new FrameLayout.LayoutParams(-1, -1));
+
+        pdfPreview = new ImageView(this);
+        pdfPreview.setBackgroundColor(Color.WHITE);
+        pdfPreview.setScaleType(ImageView.ScaleType.MATRIX);
+        pdfPreview.setVisibility(View.GONE);
+        FrameLayout.LayoutParams previewParams = new FrameLayout.LayoutParams(-1, -1);
+        previewParams.setMargins(dp(16), dp(72), dp(16), dp(16));
+        root.addView(pdfPreview, previewParams);
+
+        LinearLayout reader = new LinearLayout(this);
+        readerBar = reader;
+        reader.setGravity(Gravity.CENTER_VERTICAL);
+        reader.setPadding(dp(8), dp(8), dp(8), dp(8));
+        reader.setBackgroundColor(Color.rgb(244, 232, 201));
+        Button previous = smallButton("‹");
+        previous.setOnClickListener(view -> showPage(currentPage - 1));
+        reader.addView(previous, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        pageLabel = text("0 / 0", 15, Color.rgb(45, 42, 35));
+        pageLabel.setGravity(Gravity.CENTER);
+        reader.addView(pageLabel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button next = smallButton("›");
+        next.setOnClickListener(view -> showPage(currentPage + 1));
+        reader.addView(next, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        Button close = smallButton("×");
+        close.setOnClickListener(view -> closeReader());
+        reader.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        reader.setVisibility(View.GONE);
+        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(64), Gravity.TOP));
+        pdfPreview.setOnTouchListener(createPdfTouchListener());
+
+        dimOverlay = new View(this);
+        dimOverlay.setBackgroundColor(Color.BLACK);
+        dimOverlay.setClickable(false);
+        root.addView(dimOverlay, new FrameLayout.LayoutParams(-1, -1));
+        return root;
+    }
+
+    private View createLegacyScreen() {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(246, 244, 238));
 
@@ -311,6 +356,7 @@ public class MainActivity extends Activity {
     }
 
     private void rebuildLibrary() {
+        if (kindleHome != null) kindleHome.invalidate();
         if (libraryList == null || preferences == null) return;
         libraryList.removeAllViews();
         Set<String> saved = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
@@ -368,6 +414,15 @@ public class MainActivity extends Activity {
         if (name == null || name.length() == 0) name = "Untitled PDF";
         try { name = URLDecoder.decode(name, "UTF-8"); } catch (Exception ignored) { }
         return "▸  " + name;
+    }
+
+    private void pickPdf() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.setType("application/pdf");
+        startActivityForResult(intent, PICK_PDF);
     }
 
     private void tryOpenPdf(Uri uri) {
@@ -508,6 +563,144 @@ public class MainActivity extends Activity {
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
         getWindow().getDecorView().setSystemUiVisibility(immersive ? flags : 0);
+    }
+
+    private class KindleHomeView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float touchDownX;
+        private float touchDownY;
+
+        KindleHomeView(android.content.Context context) {
+            super(context);
+            paint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+            setBackgroundColor(Color.rgb(244, 232, 201));
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float density = getResources().getDisplayMetrics().density;
+            canvas.save();
+            canvas.scale(density, density);
+            int width = (int) (getWidth() / density);
+            int height = (int) (getHeight() / density);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(244, 232, 201));
+            canvas.drawRect(0, 0, width, height, paint);
+
+            drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
+                    26, 30, 12, Color.rgb(78, 71, 57), false);
+            drawText(canvas, "☼", width - 138, 31, 20, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "⌁", width - 96, 31, 20, Color.rgb(70, 63, 50), false);
+            drawText(canvas, "⌕", width - 52, 31, 22, Color.rgb(70, 63, 50), false);
+
+            drawText(canvas, t("books"), 28, 76, 16, Color.rgb(56, 49, 37), true);
+            drawText(canvas, t("authors"), 120, 76, 16, Color.rgb(108, 98, 80), false);
+            drawText(canvas, t("filter_all"), width - 128, 76, 13, Color.rgb(84, 76, 61), false);
+            paint.setColor(Color.rgb(70, 63, 50));
+            canvas.drawRect(26, 91, 93, 94, paint);
+            paint.setColor(Color.rgb(192, 177, 143));
+            canvas.drawRect(24, 106, width - 24, 107, paint);
+
+            drawText(canvas, t("library"), 28, 138, 27, Color.rgb(45, 40, 31), true);
+            drawText(canvas, t("search_library"), 28, 166, 14, Color.rgb(124, 111, 88), false);
+            paint.setColor(Color.rgb(173, 157, 124));
+            canvas.drawRect(26, 178, width - 26, 179, paint);
+
+            ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                    new HashSet<String>()));
+            String last = preferences.getString(LAST_PDF, null);
+            if (last != null && books.remove(last)) books.add(0, last);
+            int left = 28;
+            int top = 198;
+            int gap = 16;
+            int cardWidth = Math.max(dp(92), (width - 56 - gap * 2) / 3);
+            int coverHeight = dp(148);
+            if (books.isEmpty()) {
+                drawText(canvas, t("empty_library"), 28, top + 45, 15, Color.rgb(113, 101, 80), false);
+                drawText(canvas, "+  " + t("open_pdf"), 28, top + 82, 15, Color.rgb(74, 63, 43), true);
+            } else {
+                int visible = Math.min(6, books.size());
+                for (int i = 0; i < visible; i++) {
+                    int column = i % 3;
+                    int row = i / 3;
+                    int x = left + column * (cardWidth + gap);
+                    int y = top + row * (coverHeight + 74);
+                    int[] colors = {Color.rgb(111, 74, 55), Color.rgb(196, 155, 92),
+                            Color.rgb(96, 116, 105), Color.rgb(75, 87, 111)};
+                    paint.setColor(colors[i % colors.length]);
+                    canvas.drawRect(x, y, x + cardWidth, y + coverHeight, paint);
+                    drawText(canvas, "FOLIO", x + 8, y + 22, 9, Color.WHITE, true);
+                    String title = displayName(Uri.parse(books.get(i))).replace("▸  ", "");
+                    if (title.length() > 18) title = title.substring(0, 16) + "…";
+                    drawText(canvas, title, x + 8, y + coverHeight - 18, 11, Color.WHITE, true);
+                    int total = preferences.getInt("count_" + books.get(i).hashCode(), 0);
+                    int page = preferences.getInt(PAGE_PREFIX + books.get(i).hashCode(), 0);
+                    drawText(canvas, total > 0 ? "%" + Math.min(99, ((page + 1) * 100) / total) + " " + t("read") : t("new_book"),
+                            x, y + coverHeight + 22, 12, Color.rgb(80, 70, 55), false);
+                    paint.setColor(Color.rgb(120, 106, 78));
+                    canvas.drawRect(x, y + coverHeight + 32, x + cardWidth, y + coverHeight + 35, paint);
+                    if (total > 0) {
+                        paint.setColor(Color.rgb(66, 91, 99));
+                        canvas.drawRect(x, y + coverHeight + 32,
+                                x + (cardWidth * Math.min(100, ((page + 1) * 100) / total) / 100),
+                                y + coverHeight + 35, paint);
+                    }
+                }
+            }
+
+            paint.setColor(Color.rgb(190, 174, 140));
+            canvas.drawRect(0, height - 74, width, height - 73, paint);
+            drawText(canvas, "▤", width / 6 - 7, height - 46, 20, Color.rgb(67, 85, 91), true);
+            drawText(canvas, t("library"), width / 6 - 30, height - 20, 11, Color.rgb(67, 85, 91), false);
+            drawText(canvas, "◉", width / 2 - 7, height - 46, 18, Color.rgb(101, 91, 72), false);
+            drawText(canvas, t("discover"), width / 2 - 25, height - 20, 11, Color.rgb(101, 91, 72), false);
+            drawText(canvas, "☰", width * 5 / 6 - 8, height - 46, 18, Color.rgb(101, 91, 72), false);
+            drawText(canvas, t("more"), width * 5 / 6 - 23, height - 20, 11, Color.rgb(101, 91, 72), false);
+            canvas.restore();
+        }
+
+        private void drawText(Canvas canvas, String value, float x, float y, float size,
+                              int color, boolean bold) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(color);
+            paint.setTextSize(size);
+            paint.setTypeface(Typeface.create("sans", bold ? Typeface.BOLD : Typeface.NORMAL));
+            canvas.drawText(value, x, y, paint);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                touchDownX = event.getX(); touchDownY = event.getY(); return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                float density = getResources().getDisplayMetrics().density;
+                float x = event.getX() / density; float y = event.getY() / density;
+                float width = getWidth() / density; float height = getHeight() / density;
+                if (y < 58 && x > width - 180 && x < width - 100) {
+                    showBrightnessDialog(); return true;
+                }
+                if (y < 58 && x > width - 78) {
+                    pickPdf(); return true;
+                }
+                if (y > height - 82 && x > width * 0.66f) {
+                    showLanguageDialog(); return true;
+                }
+                if (y > 190 && y < 620) {
+                    int cardWidth = Math.max(92, (int) ((width - 56 - 16 * 2) / 3));
+                    int column = Math.max(0, Math.min(2, (int) ((x - 28) / (cardWidth + 16))));
+                    int row = Math.max(0, (int) ((y - 198) / (148 + 74)));
+                    int index = row * 3 + column;
+                    ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                            new HashSet<String>()));
+                    String last = preferences.getString(LAST_PDF, null);
+                    if (last != null && books.remove(last)) books.add(0, last);
+                    if (index >= 0 && index < books.size()) tryOpenPdf(Uri.parse(books.get(index)));
+                    else if (books.isEmpty()) pickPdf();
+                    return true;
+                }
+            }
+            return true;
+        }
     }
 
     private void showBrightnessDialog() {
