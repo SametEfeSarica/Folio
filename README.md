@@ -1,10 +1,12 @@
-# Folio Dimmer
+# Folio v0.1
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
-The prototype provides:
+The first usable prototype provides:
 
 - A quiet, library-style reading screen.
+- A native PDF picker for opening a PDF stored on the tablet.
+- A first-page PDF preview using Android's built-in `PdfRenderer` (API 21+).
 - An extra-dim slider that adds a black overlay from 0% to 80%.
 - A fullscreen toggle using Android immersive sticky mode.
 - No runtime or UI dependencies outside the Android SDK.
