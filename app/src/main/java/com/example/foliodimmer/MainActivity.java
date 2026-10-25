@@ -868,7 +868,50 @@ public class MainActivity extends Activity {
         private void drawIconButton(Canvas canvas, int x, int y, String icon) {
             paint.setColor(Color.rgb(232, 220, 191));
             canvas.drawRoundRect(new RectF(x, y, x + 36, y + 34), 8, 8, paint);
-            drawText(canvas, icon, x + 10, y + 23, 16, Color.rgb(65, 56, 43), true);
+            paint.setColor(Color.rgb(65, 56, 43));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2.2f);
+            float cx = x + 18;
+            float cy = y + 17;
+            if ("☼".equals(icon)) {
+                canvas.drawCircle(cx, cy, 5, paint);
+                for (int i = 0; i < 8; i++) {
+                    double angle = i * Math.PI / 4.0;
+                    float x1 = cx + (float) Math.cos(angle) * 8;
+                    float y1 = cy + (float) Math.sin(angle) * 8;
+                    float x2 = cx + (float) Math.cos(angle) * 11;
+                    float y2 = cy + (float) Math.sin(angle) * 11;
+                    canvas.drawLine(x1, y1, x2, y2, paint);
+                }
+            } else if ("+".equals(icon)) {
+                paint.setStrokeWidth(2.8f);
+                canvas.drawLine(cx - 7, cy, cx + 7, cy, paint);
+                canvas.drawLine(cx, cy - 7, cx, cy + 7, paint);
+            } else if ("⚙".equals(icon)) {
+                canvas.drawCircle(cx, cy, 7, paint);
+                canvas.drawCircle(cx, cy, 2, paint);
+                for (int i = 0; i < 8; i++) {
+                    double angle = i * Math.PI / 4.0;
+                    float x1 = cx + (float) Math.cos(angle) * 8;
+                    float y1 = cy + (float) Math.sin(angle) * 8;
+                    float x2 = cx + (float) Math.cos(angle) * 11;
+                    float y2 = cy + (float) Math.sin(angle) * 11;
+                    canvas.drawLine(x1, y1, x2, y2, paint);
+                }
+            } else if ("⛶".equals(icon)) {
+                canvas.drawLine(x + 9, y + 14, x + 9, y + 9, paint);
+                canvas.drawLine(x + 9, y + 9, x + 14, y + 9, paint);
+                canvas.drawLine(x + 27, y + 14, x + 27, y + 9, paint);
+                canvas.drawLine(x + 27, y + 9, x + 22, y + 9, paint);
+                canvas.drawLine(x + 9, y + 20, x + 9, y + 25, paint);
+                canvas.drawLine(x + 9, y + 25, x + 14, y + 25, paint);
+                canvas.drawLine(x + 27, y + 20, x + 27, y + 25, paint);
+                canvas.drawLine(x + 27, y + 25, x + 22, y + 25, paint);
+            } else {
+                canvas.drawCircle(x + 16, y + 15, 6, paint);
+                canvas.drawLine(x + 20, y + 20, x + 26, y + 26, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
         }
 
         private void drawText(Canvas canvas, String value, float x, float y, float size,
