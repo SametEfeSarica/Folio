@@ -13,7 +13,7 @@ The first usable prototype provides:
 
 ## Build
 
-Open this folder in Android Studio with an Android SDK and Gradle support installed. The project uses Android Gradle Plugin `3.5.4`, compiles against SDK 28, and targets/minimizes API 22.
+Open this folder in Android Studio with an Android SDK and Gradle support installed. The project uses Android Gradle Plugin `8.13.2`, Gradle `8.13`, compiles against SDK 35, and targets/minimizes API 22. Android Studio should use JDK 17 for Gradle.
 
 From a terminal with Gradle available:
 
@@ -23,6 +23,6 @@ gradle assembleDebug
 
 The APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
 
-If the Android SDK or Gradle tooling is missing, install Android Studio and SDK Platform 28, then open this project and let Android Studio sync and build it. This checkout does not include a Gradle wrapper. The source files are self-contained and require no runtime dependencies beyond the Android build plugin.
+If the Android SDK or Gradle tooling is missing, install Android Studio and SDK Platform 35, then open this project and let Android Studio sync and build it. The source files are self-contained and require no runtime dependencies beyond the Android build plugin.
 
 
