@@ -1,8 +1,8 @@
-# Folio v0.5
+# Folio v0.6
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
-The fifth prototype provides:
+The sixth prototype provides:
 
 - A quiet, library-style reading screen.
 - A native PDF picker for opening a PDF stored on the tablet.
@@ -21,6 +21,9 @@ The fifth prototype provides:
 - First-launch language setup with Turkish and English options.
 - Saved language selection with a language picker under More.
 - Quick brightness/extra-dim dialog from the top bar.
+- A Kindle-inspired home screen drawn as a lightweight native canvas for consistent tablet layout.
+- Three-column book cover grid with reading percentage and bottom navigation.
+- First-run language setup presented above the library screen.
 - An extra-dim slider that adds a black overlay from 0% to 80%.
 - A fullscreen toggle using Android immersive sticky mode.
 - No runtime or UI dependencies outside the Android SDK.
