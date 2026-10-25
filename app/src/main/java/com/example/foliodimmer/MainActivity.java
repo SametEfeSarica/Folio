@@ -2,14 +2,19 @@ package com.example.foliodimmer;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.pdf.PdfRenderer;
+import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.os.Bundle;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -23,12 +28,26 @@ import android.widget.TextView;
 public class MainActivity extends Activity {
     private View dimOverlay;
     private TextView amountLabel;
+    private TextView pageLabel;
     private ImageView pdfPreview;
     private PdfRenderer renderer;
     private ParcelFileDescriptor pdfFile;
+    private Bitmap pageBitmap;
+    private Matrix imageMatrix = new Matrix();
+    private ScaleGestureDetector scaleDetector;
+    private float lastTouchX;
+    private float lastTouchY;
+    private float currentScale = 1f;
+    private int currentPage;
+    private SharedPreferences preferences;
+    private LinearLayout libraryPage;
+    private View readerBar;
     private boolean immersive;
 
     private static final int PICK_PDF = 40;
+    private static final String PREFS = "folio_preferences";
+    private static final String LAST_PDF = "last_pdf";
+    private static final String DIM_LEVEL = "dim_level";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -36,7 +55,13 @@ public class MainActivity extends Activity {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         setContentView(createScreen());
+        updateDim(preferences.getInt(DIM_LEVEL, 0));
+        String savedPdf = preferences.getString(LAST_PDF, null);
+        if (savedPdf != null) {
+            tryOpenPdf(Uri.parse(savedPdf));
+        }
     }
 
     private View createScreen() {
@@ -44,6 +69,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.rgb(246, 244, 238));
 
         LinearLayout page = new LinearLayout(this);
+        libraryPage = page;
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(24), dp(28), dp(24), dp(24));
 
@@ -92,6 +118,7 @@ public class MainActivity extends Activity {
             @Override public void onStartTrackingTouch(SeekBar bar) { }
             @Override public void onStopTrackingTouch(SeekBar bar) { }
         });
+        slider.setProgress(preferences == null ? 0 : preferences.getInt(DIM_LEVEL, 0));
         page.addView(slider, new LinearLayout.LayoutParams(-1, dp(48)));
 
         Button openButton = new Button(this);
@@ -100,6 +127,8 @@ public class MainActivity extends Activity {
             @Override public void onClick(View view) {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
                 intent.setType("application/pdf");
                 startActivityForResult(intent, PICK_PDF);
             }
@@ -123,11 +152,37 @@ public class MainActivity extends Activity {
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
         pdfPreview = new ImageView(this);
         pdfPreview.setBackgroundColor(Color.WHITE);
-        pdfPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        pdfPreview.setScaleType(ImageView.ScaleType.MATRIX);
         pdfPreview.setVisibility(View.GONE);
         FrameLayout.LayoutParams previewParams = new FrameLayout.LayoutParams(-1, -1);
-        previewParams.setMargins(dp(16), dp(16), dp(16), dp(16));
+        previewParams.setMargins(dp(16), dp(72), dp(16), dp(16));
         root.addView(pdfPreview, previewParams);
+        LinearLayout readerBar = new LinearLayout(this);
+        this.readerBar = readerBar;
+        readerBar.setGravity(Gravity.CENTER_VERTICAL);
+        readerBar.setPadding(dp(8), dp(8), dp(8), dp(8));
+        readerBar.setBackgroundColor(Color.rgb(242, 238, 230));
+        Button previous = smallButton("‹");
+        previous.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showPage(currentPage - 1); }
+        });
+        readerBar.addView(previous, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        pageLabel = text("0 / 0", 15, Color.rgb(50, 45, 41));
+        pageLabel.setGravity(Gravity.CENTER);
+        readerBar.addView(pageLabel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button next = smallButton("›");
+        next.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { showPage(currentPage + 1); }
+        });
+        readerBar.addView(next, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        Button close = smallButton("×");
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { closeReader(); }
+        });
+        readerBar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        readerBar.setVisibility(View.GONE);
+        root.addView(readerBar, new FrameLayout.LayoutParams(-1, dp(64), Gravity.TOP));
+        pdfPreview.setOnTouchListener(createPdfTouchListener());
         dimOverlay = new View(this);
         dimOverlay.setBackgroundColor(Color.BLACK);
         dimOverlay.setAlpha(0f);
@@ -139,25 +194,96 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == PICK_PDF && resultCode == RESULT_OK && data != null) {
+        if (requestCode == PICK_PDF && resultCode == RESULT_OK && data != null && data.getData() != null) {
             try {
-                closePdf();
-                pdfFile = getContentResolver().openFileDescriptor(data.getData(), "r");
-                renderer = new PdfRenderer(pdfFile);
-                if (renderer.getPageCount() > 0) {
-                    PdfRenderer.Page page = renderer.openPage(0);
-                    Bitmap bitmap = Bitmap.createBitmap(page.getWidth(), page.getHeight(),
-                            Bitmap.Config.ARGB_8888);
-                    bitmap.eraseColor(Color.WHITE);
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                    page.close();
-                    pdfPreview.setImageBitmap(bitmap);
-                    pdfPreview.setVisibility(View.VISIBLE);
-                }
-            } catch (Exception error) {
-                pdfPreview.setVisibility(View.GONE);
-            }
+                getContentResolver().takePersistableUriPermission(data.getData(),
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+            preferences.edit().putString(LAST_PDF, data.getData().toString()).apply();
+            tryOpenPdf(data.getData());
         }
+    }
+
+    private void tryOpenPdf(Uri uri) {
+        try {
+            closePdf();
+            pdfFile = getContentResolver().openFileDescriptor(uri, "r");
+            renderer = new PdfRenderer(pdfFile);
+            currentPage = 0;
+            libraryPage.setVisibility(View.GONE);
+            readerBar.setVisibility(View.VISIBLE);
+            pdfPreview.setVisibility(View.VISIBLE);
+            showPage(currentPage);
+        } catch (Exception error) {
+            closePdf();
+            libraryPage.setVisibility(View.VISIBLE);
+            readerBar.setVisibility(View.GONE);
+            pdfPreview.setVisibility(View.GONE);
+        }
+    }
+
+    private void showPage(int pageNumber) {
+        if (renderer == null || pageNumber < 0 || pageNumber >= renderer.getPageCount()) return;
+        currentPage = pageNumber;
+        PdfRenderer.Page page = renderer.openPage(currentPage);
+        Bitmap bitmap = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2,
+                Bitmap.Config.ARGB_8888);
+        bitmap.eraseColor(Color.WHITE);
+        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+        page.close();
+        if (pageBitmap != null) pageBitmap.recycle();
+        pageBitmap = bitmap;
+        pdfPreview.setImageBitmap(pageBitmap);
+        pageLabel.setText((currentPage + 1) + " / " + renderer.getPageCount());
+        pdfPreview.post(new Runnable() {
+            @Override public void run() { fitPage(); }
+        });
+    }
+
+    private void fitPage() {
+        if (pageBitmap == null || pdfPreview.getWidth() == 0 || pdfPreview.getHeight() == 0) return;
+        float scale = Math.min((float) pdfPreview.getWidth() / pageBitmap.getWidth(),
+                (float) pdfPreview.getHeight() / pageBitmap.getHeight());
+        currentScale = 1f;
+        imageMatrix.reset();
+        imageMatrix.postScale(scale, scale);
+        imageMatrix.postTranslate((pdfPreview.getWidth() - pageBitmap.getWidth() * scale) / 2f,
+                (pdfPreview.getHeight() - pageBitmap.getHeight() * scale) / 2f);
+        pdfPreview.setImageMatrix(imageMatrix);
+    }
+
+    private View.OnTouchListener createPdfTouchListener() {
+        scaleDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScale(ScaleGestureDetector detector) {
+                float factor = detector.getScaleFactor();
+                currentScale = Math.max(1f, Math.min(5f, currentScale * factor));
+                imageMatrix.postScale(factor, factor, detector.getFocusX(), detector.getFocusY());
+                pdfPreview.setImageMatrix(imageMatrix);
+                return true;
+            }
+        });
+        return new View.OnTouchListener() {
+            @Override public boolean onTouch(View view, MotionEvent event) {
+                scaleDetector.onTouchEvent(event);
+                if (event.getPointerCount() == 1 && !scaleDetector.isInProgress()) {
+                    if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                        lastTouchX = event.getX(); lastTouchY = event.getY();
+                    } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
+                        imageMatrix.postTranslate(event.getX() - lastTouchX, event.getY() - lastTouchY);
+                        pdfPreview.setImageMatrix(imageMatrix);
+                        lastTouchX = event.getX(); lastTouchY = event.getY();
+                    }
+                }
+                return true;
+            }
+        };
+    }
+
+    private void closeReader() {
+        closePdf();
+        readerBar.setVisibility(View.GONE);
+        pdfPreview.setVisibility(View.GONE);
+        libraryPage.setVisibility(View.VISIBLE);
     }
 
     private void closePdf() {
@@ -176,6 +302,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         closePdf();
+        if (pageBitmap != null) pageBitmap.recycle();
         super.onDestroy();
     }
 
@@ -185,6 +312,9 @@ public class MainActivity extends Activity {
         }
         if (amountLabel != null) {
             amountLabel.setText(value + "%");
+        }
+        if (preferences != null) {
+            preferences.edit().putInt(DIM_LEVEL, value).apply();
         }
     }
 
@@ -201,6 +331,13 @@ public class MainActivity extends Activity {
         view.setTextSize(size);
         view.setTextColor(color);
         return view;
+    }
+
+    private Button smallButton(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setTextSize(24);
+        return button;
     }
 
     private LinearLayout.LayoutParams wrap() {
