@@ -43,6 +43,7 @@ public class MainActivity extends Activity {
     private View dimOverlay;
     private TextView amountLabel;
     private TextView pageLabel;
+    private SeekBar pageSeekBar;
     private ImageView pdfPreview;
     private PdfRenderer renderer;
     private ParcelFileDescriptor pdfFile;
@@ -106,28 +107,42 @@ public class MainActivity extends Activity {
         pdfPreview.setScaleType(ImageView.ScaleType.MATRIX);
         pdfPreview.setVisibility(View.GONE);
         FrameLayout.LayoutParams previewParams = new FrameLayout.LayoutParams(-1, -1);
-        previewParams.setMargins(dp(16), dp(72), dp(16), dp(16));
+        previewParams.setMargins(dp(16), dp(84), dp(16), dp(16));
         root.addView(pdfPreview, previewParams);
 
         LinearLayout reader = new LinearLayout(this);
         readerBar = reader;
         reader.setGravity(Gravity.CENTER_VERTICAL);
-        reader.setPadding(dp(8), dp(8), dp(8), dp(8));
+        reader.setPadding(dp(8), dp(4), dp(8), dp(4));
         reader.setBackgroundColor(Color.rgb(244, 232, 201));
         Button previous = smallButton("‹");
         previous.setOnClickListener(view -> showPage(currentPage - 1));
-        reader.addView(previous, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        reader.addView(previous, new LinearLayout.LayoutParams(dp(48), dp(64)));
+        LinearLayout pageControl = new LinearLayout(this);
+        pageControl.setOrientation(LinearLayout.VERTICAL);
+        pageControl.setGravity(Gravity.CENTER);
         pageLabel = text("0 / 0", 15, Color.rgb(45, 42, 35));
         pageLabel.setGravity(Gravity.CENTER);
-        reader.addView(pageLabel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        pageControl.addView(pageLabel, new LinearLayout.LayoutParams(-1, dp(24)));
+        pageSeekBar = new SeekBar(this);
+        pageSeekBar.setMax(1);
+        pageSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                if (fromUser) showPage(value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { }
+        });
+        pageControl.addView(pageSeekBar, new LinearLayout.LayoutParams(-1, dp(34)));
+        reader.addView(pageControl, new LinearLayout.LayoutParams(0, dp(64), 1));
         Button next = smallButton("›");
         next.setOnClickListener(view -> showPage(currentPage + 1));
-        reader.addView(next, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        reader.addView(next, new LinearLayout.LayoutParams(dp(48), dp(64)));
         Button close = smallButton("×");
         close.setOnClickListener(view -> closeReader());
         reader.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
         reader.setVisibility(View.GONE);
-        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(64), Gravity.TOP));
+        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(76), Gravity.TOP));
         pdfPreview.setOnTouchListener(createPdfTouchListener());
 
         dimOverlay = new View(this);
@@ -432,6 +447,7 @@ public class MainActivity extends Activity {
             renderer = new PdfRenderer(pdfFile);
             currentUri = uri.toString();
             preferences.edit().putInt("count_" + currentUri.hashCode(), renderer.getPageCount()).apply();
+            pageSeekBar.setMax(Math.max(1, renderer.getPageCount() - 1));
             currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
             currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
             libraryPage.setVisibility(View.GONE);
@@ -463,6 +479,7 @@ public class MainActivity extends Activity {
         pageBitmap = bitmap;
         pdfPreview.setImageBitmap(pageBitmap);
         pageLabel.setText((currentPage + 1) + " / " + renderer.getPageCount());
+        if (pageSeekBar != null) pageSeekBar.setProgress(currentPage);
         pdfPreview.post(new Runnable() {
             @Override public void run() { fitPage(); }
         });
@@ -497,7 +514,8 @@ public class MainActivity extends Activity {
                     if (event.getAction() == MotionEvent.ACTION_DOWN) {
                         lastTouchX = event.getX(); lastTouchY = event.getY();
                         downX = event.getX(); downY = event.getY();
-                    } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
+                    } else if (event.getAction() == MotionEvent.ACTION_MOVE
+                            && currentScale > 1.05f) {
                         imageMatrix.postTranslate(event.getX() - lastTouchX, event.getY() - lastTouchY);
                         pdfPreview.setImageMatrix(imageMatrix);
                         lastTouchX = event.getX(); lastTouchY = event.getY();
