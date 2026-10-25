@@ -150,8 +150,8 @@ public class MainActivity extends Activity {
         searchBar.setTextColor(Color.rgb(58, 57, 53));
         searchBar.setHintTextColor(Color.rgb(117, 115, 108));
         GradientDrawable searchBackground = new GradientDrawable();
-        searchBackground.setColor(Color.rgb(239, 237, 230));
-        searchBackground.setStroke(dp(1), Color.rgb(177, 174, 165));
+        searchBackground.setColor(Color.rgb(232, 230, 222));
+        searchBackground.setStroke(dp(1), Color.rgb(178, 176, 168));
         searchBackground.setCornerRadius(dp(4));
         searchBar.setBackground(searchBackground);
         FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(156), dp(34));
@@ -160,7 +160,7 @@ public class MainActivity extends Activity {
         root.addView(searchBar, searchParams);
 
         brightnessBar = new SeekBar(this);
-        brightnessBar.setMax(80);
+        brightnessBar.setMax(100);
         brightnessBar.setProgress(preferences.getInt(DIM_LEVEL, 0));
         brightnessBar.setVisibility(View.GONE);
         brightnessBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -296,7 +296,7 @@ public class MainActivity extends Activity {
         page.addView(amountLabel, labelParams);
 
         SeekBar slider = new SeekBar(this);
-        slider.setMax(80);
+        slider.setMax(100);
         slider.setProgress(0);
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
@@ -723,14 +723,21 @@ public class MainActivity extends Activity {
                 canvas.drawCircle(knob, 47, 6, toolbarPaint);
             }
             drawReaderButton(canvas, 14, 30, false);
-            drawReaderButton(canvas, width - 62, 30, true);
+            drawReaderButton(canvas, width - 104, 30, true);
+            drawCloseButton(canvas, width - 50, 30);
+            toolbarPaint.setStyle(Paint.Style.FILL);
+            canvas.restore();
+        }
+
+        private void drawCloseButton(Canvas canvas, float x, float y) {
+            toolbarPaint.setStyle(Paint.Style.FILL);
+            toolbarPaint.setColor(Color.rgb(220, 218, 211));
+            canvas.drawRoundRect(new RectF(x, y - 24, x + 32, y + 8), 6, 6, toolbarPaint);
             toolbarPaint.setStyle(Paint.Style.STROKE);
             toolbarPaint.setStrokeWidth(2);
             toolbarPaint.setColor(Color.rgb(55, 53, 48));
-            canvas.drawLine(width - 28, 29, width - 18, 39, toolbarPaint);
-            canvas.drawLine(width - 18, 29, width - 28, 39, toolbarPaint);
-            toolbarPaint.setStyle(Paint.Style.FILL);
-            canvas.restore();
+            canvas.drawLine(x + 10, y - 15, x + 22, y - 3, toolbarPaint);
+            canvas.drawLine(x + 22, y - 15, x + 10, y - 3, toolbarPaint);
         }
 
         private void drawReaderButton(Canvas canvas, float x, float y, boolean next) {
@@ -769,8 +776,8 @@ public class MainActivity extends Activity {
                 dragging = false;
                 if (Math.abs(x - downX) < 10 && y < 60) {
                     if (x < 65) showPage(currentPage - 1);
-                    else if (x > width - 92 && x < width - 48) showPage(currentPage + 1);
-                    else if (x >= width - 48) closeReader();
+                    else if (x > width - 110 && x < width - 56) showPage(currentPage + 1);
+                    else if (x >= width - 56) closeReader();
                 }
                 return true;
             }
@@ -1055,16 +1062,14 @@ public class MainActivity extends Activity {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRect(width - 270, 54, width - 22, 146, paint);
+            canvas.drawRoundRect(new RectF(width - 270, 54, width - 22, 146), 7, 7, paint);
             drawText(canvas, t("brightness"), width - 246, 82, 16,
                     Color.rgb(54, 53, 49), true);
-            drawText(canvas, preferences.getInt(DIM_LEVEL, 0) + "%", width - 70, 82, 13,
-                    Color.rgb(75, 73, 67), false);
             paint.setColor(Color.rgb(80, 78, 71));
             paint.setStrokeWidth(2);
             canvas.drawLine(width - 246, 118, width - 46, 118, paint);
-            float knob = width - 246 + 200 * (80 - Math.min(80,
-                    preferences.getInt(DIM_LEVEL, 0))) / 80f;
+            float knob = width - 246 + 200 * (100 - Math.min(100,
+                    preferences.getInt(DIM_LEVEL, 0))) / 100f;
             paint.setColor(Color.rgb(55, 53, 48));
             canvas.drawCircle(knob, 118, 7, paint);
         }
@@ -1073,10 +1078,11 @@ public class MainActivity extends Activity {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRect(width - 270, 54, width - 22, 318, paint);
+            int colorTop = languageExpanded ? 214 : 148;
+            int panelBottom = colorExpanded ? colorTop + 82 : colorTop + 36;
+            canvas.drawRoundRect(new RectF(width - 270, 54, width - 22, panelBottom), 7, 7, paint);
             drawText(canvas, t("settings"), width - 246, 82, 16, Color.rgb(54, 53, 49), true);
             drawText(canvas, t("language"), width - 246, 116, 14, Color.rgb(61, 60, 55), true);
-            int colorTop = 148;
             if (languageExpanded) {
                 drawText(canvas, "Türkçe", width - 220, 148, 14,
                         "tr".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
@@ -1229,9 +1235,11 @@ public class MainActivity extends Activity {
                 float width = getWidth() / density; float height = getHeight() / density;
                 if (brightnessPanel) {
                     if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
-                        int value = Math.max(0, Math.min(80,
-                                Math.round(((width - 46) - x) / 200f * 80f)));
+                        int value = Math.max(0, Math.min(100,
+                                Math.round(((width - 46) - x) / 200f * 100f)));
                         updateDim(value);
+                        invalidate();
+                        return true;
                     }
                     brightnessPanel = false;
                     invalidate();
@@ -1371,7 +1379,7 @@ public class MainActivity extends Activity {
 
     private void showBrightnessDialog() {
         final SeekBar brightness = new SeekBar(this);
-        brightness.setMax(80);
+        brightness.setMax(100);
         brightness.setProgress(preferences.getInt(DIM_LEVEL, 0));
         brightness.setPadding(dp(20), dp(12), dp(20), dp(12));
         brightness.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
