@@ -88,6 +88,11 @@ public class MainActivity extends Activity {
     private boolean brightnessPanel;
     private boolean languageExpanded;
     private boolean colorExpanded;
+    private boolean collectionEditor;
+    private boolean collectionActionPanel;
+    private EditText collectionInput;
+    private String editingCollection;
+    private String pendingCollectionAction;
     private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
 
     private static final int PICK_PDF = 40;
@@ -132,7 +137,7 @@ public class MainActivity extends Activity {
 
         searchBar = new EditText(this);
         searchBar.setSingleLine(true);
-        searchBar.setTextSize(14);
+        searchBar.setTextSize(16);
         searchBar.setHint(t("search_library"));
         searchBar.setPadding(dp(12), 0, dp(12), 0);
         searchBar.setVisibility(View.VISIBLE);
@@ -154,9 +159,9 @@ public class MainActivity extends Activity {
         searchBackground.setStroke(dp(1), Color.rgb(178, 176, 168));
         searchBackground.setCornerRadius(dp(4));
         searchBar.setBackground(searchBackground);
-        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(156), dp(34));
-        searchParams.leftMargin = dp(158);
-        searchParams.topMargin = dp(6);
+        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(180), dp(40));
+        searchParams.leftMargin = dp(100);
+        searchParams.topMargin = dp(5);
         root.addView(searchBar, searchParams);
 
         brightnessBar = new SeekBar(this);
@@ -186,7 +191,7 @@ public class MainActivity extends Activity {
         ReaderToolbarView reader = new ReaderToolbarView(this);
         readerBar = reader;
         reader.setVisibility(View.GONE);
-        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(64), Gravity.TOP));
+        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(82), Gravity.TOP));
         pdfPreview.setOnTouchListener(createPdfTouchListener());
 
         dimOverlay = new View(this);
@@ -457,6 +462,85 @@ public class MainActivity extends Activity {
     }
 
     private void showNewCollectionDialog() {
+        showCollectionEditor(null);
+    }
+
+    private void showCollectionEditor(String existingName) {
+        collectionActionPanel = false;
+        collectionEditor = true;
+        editingCollection = existingName;
+        collectionInput = new EditText(this);
+        collectionInput.setSingleLine(true);
+        collectionInput.setText(existingName == null ? "" : existingName);
+        collectionInput.setTextSize(17);
+        collectionInput.setTextColor(Color.rgb(55, 53, 48));
+        collectionInput.setHintTextColor(Color.rgb(130, 127, 119));
+        collectionInput.setHint(t("collection_hint"));
+        collectionInput.setPadding(dp(10), 0, dp(10), 0);
+        GradientDrawable inputBackground = new GradientDrawable();
+        inputBackground.setColor(Color.rgb(232, 230, 222));
+        inputBackground.setStroke(dp(1), Color.rgb(150, 147, 138));
+        inputBackground.setCornerRadius(dp(4));
+        collectionInput.setBackground(inputBackground);
+        FrameLayout.LayoutParams inputParams = new FrameLayout.LayoutParams(dp(300), dp(44));
+        inputParams.leftMargin = dp(70);
+        inputParams.topMargin = dp(258);
+        root.addView(collectionInput, inputParams);
+        collectionInput.requestFocus();
+        ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                .showSoftInput(collectionInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        if (kindleHome != null) kindleHome.invalidate();
+    }
+
+    private void finishCollectionEditor(boolean save) {
+        if (save && collectionInput != null) {
+            String name = collectionInput.getText().toString().trim();
+            if (name.length() > 0) {
+                Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                        new HashSet<String>()));
+                if (editingCollection != null) names.remove(editingCollection);
+                names.add(name);
+                SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
+                if (editingCollection != null) {
+                    for (String book : preferences.getStringSet(LIBRARY_URIS,
+                            new HashSet<String>())) {
+                        if (editingCollection.equals(preferences.getString(
+                                COLLECTION_PREFIX + book.hashCode(), null))) {
+                            editor.putString(COLLECTION_PREFIX + book.hashCode(), name);
+                        }
+                    }
+                }
+                editor.apply();
+            }
+        }
+        if (collectionInput != null) {
+            ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                    .hideSoftInputFromWindow(collectionInput.getWindowToken(), 0);
+            root.removeView(collectionInput);
+        }
+        collectionInput = null;
+        collectionEditor = false;
+        editingCollection = null;
+        if (kindleHome != null) kindleHome.invalidate();
+    }
+
+    private void deleteCollection(String name) {
+        Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                new HashSet<String>()));
+        names.remove(name);
+        SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
+        for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
+            if (name.equals(preferences.getString(COLLECTION_PREFIX + book.hashCode(), null))) {
+                editor.putString(COLLECTION_PREFIX + book.hashCode(), t("general"));
+            }
+        }
+        editor.apply();
+        collectionActionPanel = false;
+        pendingCollectionAction = null;
+        if (kindleHome != null) kindleHome.invalidate();
+    }
+
+    private void showLegacyCollectionDialog(final Uri uri) {
         final EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setHint(t("collection_hint"));
@@ -705,26 +789,26 @@ public class MainActivity extends Activity {
             toolbarPaint.setColor(Color.rgb(232, 230, 222));
             canvas.drawRect(0, 0, width, getHeight() / density, toolbarPaint);
             toolbarPaint.setTypeface(Typeface.create("serif", Typeface.BOLD));
-            toolbarPaint.setTextSize(15);
+            toolbarPaint.setTextSize(18);
             toolbarPaint.setColor(Color.rgb(55, 53, 48));
             toolbarPaint.setTextAlign(Paint.Align.CENTER);
             int total = renderer == null ? 0 : renderer.getPageCount();
             canvas.drawText(total == 0 ? "0 / 0" : (currentPage + 1) + " / " + total,
-                    width / 2f, 21, toolbarPaint);
+                    width / 2f, 27, toolbarPaint);
 
             toolbarPaint.setColor(Color.rgb(100, 98, 91));
             toolbarPaint.setStrokeWidth(1.5f);
-            float left = 76;
-            float right = width - 108;
-            canvas.drawLine(left, 47, right, 47, toolbarPaint);
+            float left = 84;
+            float right = width - 124;
+            canvas.drawLine(left, 58, right, 58, toolbarPaint);
             if (total > 1) {
                 float knob = left + (right - left) * currentPage / (float) (total - 1);
                 toolbarPaint.setColor(Color.rgb(63, 61, 55));
-                canvas.drawCircle(knob, 47, 6, toolbarPaint);
+                canvas.drawCircle(knob, 58, 7, toolbarPaint);
             }
-            drawReaderButton(canvas, 14, 30, false);
-            drawReaderButton(canvas, width - 104, 30, true);
-            drawCloseButton(canvas, width - 50, 30);
+            drawReaderButton(canvas, 14, 40, false);
+            drawReaderButton(canvas, width - 116, 40, true);
+            drawCloseButton(canvas, width - 58, 40);
             toolbarPaint.setStyle(Paint.Style.FILL);
             canvas.restore();
         }
@@ -732,27 +816,27 @@ public class MainActivity extends Activity {
         private void drawCloseButton(Canvas canvas, float x, float y) {
             toolbarPaint.setStyle(Paint.Style.FILL);
             toolbarPaint.setColor(Color.rgb(220, 218, 211));
-            canvas.drawRoundRect(new RectF(x, y - 24, x + 32, y + 8), 6, 6, toolbarPaint);
+            canvas.drawRoundRect(new RectF(x, y - 27, x + 40, y + 19), 7, 7, toolbarPaint);
             toolbarPaint.setStyle(Paint.Style.STROKE);
             toolbarPaint.setStrokeWidth(2);
             toolbarPaint.setColor(Color.rgb(55, 53, 48));
-            canvas.drawLine(x + 10, y - 15, x + 22, y - 3, toolbarPaint);
-            canvas.drawLine(x + 22, y - 15, x + 10, y - 3, toolbarPaint);
+            canvas.drawLine(x + 12, y - 14, x + 28, y + 2, toolbarPaint);
+            canvas.drawLine(x + 28, y - 14, x + 12, y + 2, toolbarPaint);
         }
 
         private void drawReaderButton(Canvas canvas, float x, float y, boolean next) {
             toolbarPaint.setStyle(Paint.Style.FILL);
             toolbarPaint.setColor(Color.rgb(220, 218, 211));
-            canvas.drawRoundRect(new RectF(x, y - 24, x + 40, y + 16), 6, 6, toolbarPaint);
+            canvas.drawRoundRect(new RectF(x, y - 27, x + 48, y + 19), 7, 7, toolbarPaint);
             toolbarPaint.setStyle(Paint.Style.STROKE);
             toolbarPaint.setStrokeWidth(2);
             toolbarPaint.setColor(Color.rgb(55, 53, 48));
             if (next) {
-                canvas.drawLine(x + 16, y - 5, x + 22, y, toolbarPaint);
-                canvas.drawLine(x + 22, y, x + 16, y + 5, toolbarPaint);
+                canvas.drawLine(x + 19, y - 6, x + 26, y, toolbarPaint);
+                canvas.drawLine(x + 26, y, x + 19, y + 6, toolbarPaint);
             } else {
-                canvas.drawLine(x + 24, y - 5, x + 18, y, toolbarPaint);
-                canvas.drawLine(x + 18, y, x + 24, y + 5, toolbarPaint);
+                canvas.drawLine(x + 29, y - 6, x + 22, y, toolbarPaint);
+                canvas.drawLine(x + 22, y, x + 29, y + 6, toolbarPaint);
             }
             toolbarPaint.setStyle(Paint.Style.FILL);
         }
@@ -764,7 +848,7 @@ public class MainActivity extends Activity {
             float width = getWidth() / density;
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 downX = x;
-                dragging = y > 28 && y < 60 && x > 60 && x < width - 90;
+                dragging = y > 35 && y < 75 && x > 70 && x < width - 106;
                 if (dragging) seekTo(x, width);
                 return true;
             }
@@ -775,9 +859,9 @@ public class MainActivity extends Activity {
             if (event.getAction() == MotionEvent.ACTION_UP) {
                 dragging = false;
                 if (Math.abs(x - downX) < 10 && y < 60) {
-                    if (x < 65) showPage(currentPage - 1);
-                    else if (x > width - 110 && x < width - 56) showPage(currentPage + 1);
-                    else if (x >= width - 56) closeReader();
+                    if (x < 74) showPage(currentPage - 1);
+                    else if (x > width - 122 && x < width - 62) showPage(currentPage + 1);
+                    else if (x >= width - 62) closeReader();
                 }
                 return true;
             }
@@ -786,7 +870,7 @@ public class MainActivity extends Activity {
 
         private void seekTo(float x, float width) {
             if (renderer == null || renderer.getPageCount() < 2) return;
-            float ratio = Math.max(0, Math.min(1, (x - 76) / (width - 184)));
+            float ratio = Math.max(0, Math.min(1, (x - 84) / (width - 208)));
             showPage(Math.round(ratio * (renderer.getPageCount() - 1)));
         }
     }
@@ -903,32 +987,34 @@ public class MainActivity extends Activity {
             canvas.drawRect(0, 0, width, height, paint);
 
             drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
-                    26, 30, 12, Color.rgb(78, 71, 57), false);
-            drawIconButton(canvas, width - 160, 8, "☼");
-            drawIconButton(canvas, width - 115, 8, "+");
-            drawIconButton(canvas, width - 70, 8, "⚙");
+                    18, 32, 14, Color.rgb(78, 71, 57), false);
+            drawIconButton(canvas, width - 182, 5, "☼");
+            drawIconButton(canvas, width - 132, 5, "+");
+            drawIconButton(canvas, width - 82, 5, "⚙");
 
-            drawText(canvas, t("books"), 28, 76, 16, Color.rgb(56, 49, 37), !collectionMode);
-            drawText(canvas, t("collections"), 120, 76, 16,
+            drawText(canvas, t("books"), 20, 82, 18, Color.rgb(56, 49, 37), !collectionMode);
+            drawText(canvas, t("collections"), 126, 82, 18,
                     collectionMode ? Color.rgb(56, 49, 37) : Color.rgb(108, 98, 80), collectionMode);
             int sortMode = preferences.getInt(SORT_MODE, 2);
             String sortLabel = sortMode == 0 ? t("sort_az")
                     : sortMode == 1 ? t("sort_za") : t("sort_recent");
-            drawText(canvas, t("filter") + ": " + sortLabel, width - 160, 76, 13,
+            paint.setColor(Color.rgb(220, 218, 211));
+            canvas.drawRoundRect(new RectF(width - 178, 57, width - 22, 96), 6, 6, paint);
+            drawText(canvas, t("filter") + ": " + sortLabel, width - 166, 82, 14,
                     Color.rgb(84, 76, 61), false);
             paint.setColor(Color.rgb(70, 63, 50));
-            if (collectionMode) canvas.drawRect(118, 91, 218, 94, paint);
-            else canvas.drawRect(26, 91, 93, 94, paint);
+            if (collectionMode) canvas.drawRect(124, 98, 246, 101, paint);
+            else canvas.drawRect(20, 98, 100, 101, paint);
             paint.setColor(Color.rgb(178, 176, 168));
-            canvas.drawRect(24, 112, width - 24, 113, paint);
+            canvas.drawRect(18, 120, width - 18, 121, paint);
             if (collectionMode && activeCollection != null) {
-                drawText(canvas, "‹  " + activeCollection, 28, 142, 18,
+                drawText(canvas, "‹  " + activeCollection, 20, 150, 20,
                         Color.rgb(65, 63, 57), true);
             }
 
             ArrayList<String> books = visibleBooks();
             int left = 28;
-            int top = collectionMode && activeCollection != null ? 160 : 132;
+            int top = collectionMode && activeCollection != null ? 172 : 140;
             int gap = 16;
             int cardWidth = Math.max(dp(92), (width - 56 - gap * 2) / 3);
             int coverHeight = dp(148);
@@ -958,15 +1044,15 @@ public class MainActivity extends Activity {
                         paint.setColor(Color.rgb(188, 185, 175));
                         canvas.drawRect(x, y, x + cardWidth, y + coverHeight, paint);
                     }
-                    drawText(canvas, "FOLIO", x + 8, y + 22, 9, Color.rgb(245, 244, 239), true);
+                    drawText(canvas, "FOLIO", x + 8, y + 24, 11, Color.rgb(245, 244, 239), true);
                     String title = displayName(Uri.parse(books.get(i))).replace("▸  ", "");
                     if (title.length() > 18) title = title.substring(0, 16) + "…";
-                    drawText(canvas, title, x + 8, y + coverHeight - 18, 11, Color.rgb(245, 244, 239), true);
+                    drawText(canvas, title, x + 8, y + coverHeight - 20, 13, Color.rgb(245, 244, 239), true);
                     int total = preferences.getInt("count_" + books.get(i).hashCode(), 0);
                     int page = preferences.getInt(PAGE_PREFIX + books.get(i).hashCode(), 0);
                     int percent = total > 0 ? (page >= total - 1 ? 100 : ((page + 1) * 100) / total) : 0;
                     drawText(canvas, total > 0 ? "%" + percent + " " + t("read") : t("new_book"),
-                            x, y + coverHeight + 22, 12, Color.rgb(75, 73, 67), false);
+                            x, y + coverHeight + 24, 14, Color.rgb(75, 73, 67), false);
                     paint.setColor(Color.rgb(145, 142, 133));
                     canvas.drawRect(x, y + coverHeight + 32, x + cardWidth, y + coverHeight + 35, paint);
                     if (total > 0) {
@@ -981,6 +1067,8 @@ public class MainActivity extends Activity {
             if (brightnessPanel) drawBrightnessPanel(canvas, width);
             if (sortPanel) drawSortPanel(canvas, width);
             if (settingsPanel) drawSettingsPanel(canvas, width);
+            if (collectionActionPanel) drawCollectionActionPanel(canvas, width);
+            if (collectionEditor) drawCollectionEditorPanel(canvas, width);
             canvas.restore();
         }
 
@@ -1063,7 +1151,7 @@ public class MainActivity extends Activity {
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
             canvas.drawRoundRect(new RectF(width - 270, 54, width - 22, 146), 7, 7, paint);
-            drawText(canvas, t("brightness"), width - 246, 82, 16,
+            drawText(canvas, t("brightness"), width - 246, 82, 18,
                     Color.rgb(54, 53, 49), true);
             paint.setColor(Color.rgb(80, 78, 71));
             paint.setStrokeWidth(2);
@@ -1081,23 +1169,23 @@ public class MainActivity extends Activity {
             int colorTop = languageExpanded ? 214 : 148;
             int panelBottom = colorExpanded ? colorTop + 82 : colorTop + 36;
             canvas.drawRoundRect(new RectF(width - 270, 54, width - 22, panelBottom), 7, 7, paint);
-            drawText(canvas, t("settings"), width - 246, 82, 16, Color.rgb(54, 53, 49), true);
-            drawText(canvas, t("language"), width - 246, 116, 14, Color.rgb(61, 60, 55), true);
+            drawText(canvas, t("settings"), width - 246, 82, 19, Color.rgb(54, 53, 49), true);
+            drawText(canvas, t("language"), width - 246, 116, 16, Color.rgb(61, 60, 55), true);
             if (languageExpanded) {
-                drawText(canvas, "Türkçe", width - 220, 148, 14,
+                drawText(canvas, "Türkçe", width - 220, 148, 16,
                         "tr".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
                         "tr".equals(language));
-                drawText(canvas, "English", width - 220, 180, 14,
+                drawText(canvas, "English", width - 220, 180, 16,
                         "en".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
                         "en".equals(language));
                 colorTop = 214;
             }
-            drawText(canvas, t("colors"), width - 246, colorTop, 14, Color.rgb(61, 60, 55), true);
+            drawText(canvas, t("colors"), width - 246, colorTop, 16, Color.rgb(61, 60, 55), true);
             if (colorExpanded) {
-                drawText(canvas, t("mono_color"), width - 220, colorTop + 32, 14,
+                drawText(canvas, t("mono_color"), width - 220, colorTop + 32, 16,
                         isColorMode() ? Color.rgb(130, 127, 119) : Color.rgb(45, 44, 40),
                         !isColorMode());
-                drawText(canvas, t("color_color"), width - 220, colorTop + 64, 14,
+                drawText(canvas, t("color_color"), width - 220, colorTop + 64, 16,
                         isColorMode() ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
                         isColorMode());
             }
@@ -1111,7 +1199,7 @@ public class MainActivity extends Activity {
             Set<String> books = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
             for (String book : books) names.add(collectionFor(book));
             if (names.isEmpty()) {
-                drawText(canvas, t("empty_collections"), left, top + 46, 15,
+                drawText(canvas, t("empty_collections"), left, top + 50, 17,
                         Color.rgb(113, 101, 80), false);
                 return;
             }
@@ -1120,16 +1208,21 @@ public class MainActivity extends Activity {
             int folderWidth = (width - 56 - 16) / 2;
             for (int i = 0; i < folders.size(); i++) {
                 int x = left + (i % 2) * (folderWidth + 16);
-                int y = top + (i / 2) * 112;
+                int y = top + (i / 2) * 128;
                 paint.setColor(isColorMode() ? Color.rgb(218, 201, 165) : Color.rgb(214, 212, 204));
-                canvas.drawRoundRect(new RectF(x, y, x + folderWidth, y + 92), 6, 6, paint);
+                canvas.drawRoundRect(new RectF(x, y, x + folderWidth, y + 108), 7, 7, paint);
                 paint.setColor(isColorMode() ? Color.rgb(133, 106, 63) : Color.rgb(91, 89, 83));
                 canvas.drawRect(x + 14, y + 27, x + 35, y + 43, paint);
                 canvas.drawRect(x + 16, y + 23, x + 27, y + 29, paint);
-                drawText(canvas, folders.get(i), x + 14, y + 61, 14, Color.rgb(71, 59, 43), true);
+                paint.setColor(isColorMode() ? Color.rgb(208, 188, 151) : Color.rgb(202, 200, 192));
+                canvas.drawRoundRect(new RectF(x + folderWidth - 48, y + 10,
+                        x + folderWidth - 12, y + 42), 6, 6, paint);
+                drawText(canvas, "…", x + folderWidth - 38, y + 32, 18,
+                        Color.rgb(75, 72, 65), true);
+                drawText(canvas, folders.get(i), x + 14, y + 72, 17, Color.rgb(71, 59, 43), true);
                 int count = 0;
                 for (String book : books) if (folders.get(i).equals(collectionFor(book))) count++;
-                drawText(canvas, count + " " + t("books_count"), x + 14, y + 81, 11,
+                drawText(canvas, count + " " + t("books_count"), x + 14, y + 96, 13,
                         Color.rgb(120, 104, 77), false);
             }
         }
@@ -1140,8 +1233,35 @@ public class MainActivity extends Activity {
             paint.setColor(Color.rgb(126, 123, 115));
             canvas.drawRoundRect(new RectF(width - 196, 128, width - 28, 158), 4, 4, paint);
             paint.setStyle(Paint.Style.FILL);
-            drawText(canvas, "+  " + t("new_collection"), width - 180, 148, 13,
+            drawText(canvas, "+  " + t("new_collection"), width - 180, 148, 15,
                     Color.rgb(66, 64, 58), true);
+        }
+
+        private void drawCollectionActionPanel(Canvas canvas, int width) {
+            paint.setColor(Color.argb(55, 40, 39, 35));
+            canvas.drawRect(0, 0, width, getHeight(), paint);
+            paint.setColor(Color.rgb(239, 237, 230));
+            canvas.drawRoundRect(new RectF(width - 252, 150, width - 24, 286), 8, 8, paint);
+            drawText(canvas, pendingCollectionAction == null ? "" : pendingCollectionAction,
+                    width - 226, 180, 17, Color.rgb(54, 53, 49), true);
+            drawText(canvas, t("rename"), width - 226, 218, 15, Color.rgb(61, 60, 55), false);
+            drawText(canvas, t("delete"), width - 226, 252, 15, Color.rgb(100, 62, 55), false);
+            drawText(canvas, t("cancel"), width - 226, 278, 13, Color.rgb(112, 109, 101), false);
+        }
+
+        private void drawCollectionEditorPanel(Canvas canvas, int width) {
+            paint.setColor(Color.argb(55, 40, 39, 35));
+            canvas.drawRect(0, 0, width, getHeight(), paint);
+            paint.setColor(Color.rgb(239, 237, 230));
+            canvas.drawRoundRect(new RectF(48, 170, width - 48, 372), 8, 8, paint);
+            drawText(canvas, editingCollection == null ? t("new_collection") : t("rename"),
+                    72, 208, 20, Color.rgb(54, 53, 49), true);
+            drawText(canvas, t("collection_hint"), 72, 244, 14,
+                    Color.rgb(112, 109, 101), false);
+            drawText(canvas, t("cancel"), width - 170, 350, 14,
+                    Color.rgb(112, 109, 101), true);
+            drawText(canvas, t("save"), width - 92, 350, 14,
+                    Color.rgb(61, 60, 55), true);
         }
 
         private Bitmap loadThumbnail(String bookUri) {
@@ -1168,20 +1288,20 @@ public class MainActivity extends Activity {
 
         private void drawIconButton(Canvas canvas, int x, int y, String icon) {
             paint.setColor(Color.rgb(220, 218, 211));
-            canvas.drawRoundRect(new RectF(x, y, x + 36, y + 34), 8, 8, paint);
+            canvas.drawRoundRect(new RectF(x, y, x + 42, y + 40), 8, 8, paint);
             paint.setColor(Color.rgb(65, 56, 43));
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(2.2f);
-            float cx = x + 18;
-            float cy = y + 17;
+            float cx = x + 21;
+            float cy = y + 20;
             if ("☼".equals(icon)) {
                 canvas.drawCircle(cx, cy, 5, paint);
                 for (int i = 0; i < 8; i++) {
                     double angle = i * Math.PI / 4.0;
-                    float x1 = cx + (float) Math.cos(angle) * 8;
-                    float y1 = cy + (float) Math.sin(angle) * 8;
-                    float x2 = cx + (float) Math.cos(angle) * 11;
-                    float y2 = cy + (float) Math.sin(angle) * 11;
+                    float x1 = cx + (float) Math.cos(angle) * 9;
+                    float y1 = cy + (float) Math.sin(angle) * 9;
+                    float x2 = cx + (float) Math.cos(angle) * 13;
+                    float y2 = cy + (float) Math.sin(angle) * 13;
                     canvas.drawLine(x1, y1, x2, y2, paint);
                 }
             } else if ("+".equals(icon)) {
@@ -1189,14 +1309,14 @@ public class MainActivity extends Activity {
                 canvas.drawLine(cx - 7, cy, cx + 7, cy, paint);
                 canvas.drawLine(cx, cy - 7, cx, cy + 7, paint);
             } else if ("⚙".equals(icon)) {
-                canvas.drawCircle(cx, cy, 7, paint);
+                canvas.drawCircle(cx, cy, 8, paint);
                 canvas.drawCircle(cx, cy, 2, paint);
                 for (int i = 0; i < 8; i++) {
                     double angle = i * Math.PI / 4.0;
-                    float x1 = cx + (float) Math.cos(angle) * 8;
-                    float y1 = cy + (float) Math.sin(angle) * 8;
-                    float x2 = cx + (float) Math.cos(angle) * 11;
-                    float y2 = cy + (float) Math.sin(angle) * 11;
+                    float x1 = cx + (float) Math.cos(angle) * 9;
+                    float y1 = cy + (float) Math.sin(angle) * 9;
+                    float x2 = cx + (float) Math.cos(angle) * 13;
+                    float y2 = cy + (float) Math.sin(angle) * 13;
                     canvas.drawLine(x1, y1, x2, y2, paint);
                 }
             } else if ("⛶".equals(icon)) {
@@ -1226,6 +1346,20 @@ public class MainActivity extends Activity {
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
+            if (brightnessPanel && (event.getAction() == MotionEvent.ACTION_DOWN
+                    || event.getAction() == MotionEvent.ACTION_MOVE)) {
+                float density = getResources().getDisplayMetrics().density;
+                float x = event.getX() / density;
+                float y = event.getY() / density;
+                float width = getWidth() / density;
+                if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
+                    int value = Math.max(0, Math.min(100,
+                            Math.round(((width - 46) - x) / 200f * 100f)));
+                    updateDim(value);
+                    invalidate();
+                }
+                return true;
+            }
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 touchDownX = event.getX(); touchDownY = event.getY(); return true;
             }
@@ -1233,6 +1367,26 @@ public class MainActivity extends Activity {
                 float density = getResources().getDisplayMetrics().density;
                 float x = event.getX() / density; float y = event.getY() / density;
                 float width = getWidth() / density; float height = getHeight() / density;
+                if (collectionEditor) {
+                    if (y >= 320 && y <= 372 && x >= width - 190 && x <= width - 34) {
+                        finishCollectionEditor(true);
+                    } else if (y >= 320 && y <= 372 && x >= width - 290 && x < width - 190) {
+                        finishCollectionEditor(false);
+                    }
+                    return true;
+                }
+                if (collectionActionPanel) {
+                    if (x >= width - 252 && x <= width - 24 && y >= 194 && y < 232) {
+                        showCollectionEditor(pendingCollectionAction);
+                    } else if (x >= width - 252 && x <= width - 24 && y >= 232 && y < 266) {
+                        deleteCollection(pendingCollectionAction);
+                    } else {
+                        collectionActionPanel = false;
+                        pendingCollectionAction = null;
+                        invalidate();
+                    }
+                    return true;
+                }
                 if (brightnessPanel) {
                     if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
                         int value = Math.max(0, Math.min(100,
@@ -1286,7 +1440,7 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
-                if (y < 58 && x >= width - 160 && x < width - 115) {
+                if (y < 55 && x >= width - 182 && x < width - 132) {
                     brightnessPanel = !brightnessPanel;
                     settingsPanel = false;
                     sortPanel = false;
@@ -1295,13 +1449,13 @@ public class MainActivity extends Activity {
                     invalidate();
                     return true;
                 }
-                if (y < 58 && x >= width - 115 && x < width - 70) {
+                if (y < 55 && x >= width - 132 && x < width - 82) {
                     settingsPanel = false;
                     sortPanel = false;
                     brightnessPanel = false;
                     pickPdf(); return true;
                 }
-                if (y < 58 && x >= width - 70) {
+                if (y < 55 && x >= width - 82) {
                     settingsPanel = !settingsPanel;
                     sortPanel = false;
                     brightnessPanel = false;
@@ -1310,19 +1464,19 @@ public class MainActivity extends Activity {
                     searchBar.clearFocus();
                     invalidate(); return true;
                 }
-                if (y > 55 && y < 105 && x > width - 180) {
+                if (y >= 55 && y <= 105 && x > width - 185) {
                     sortPanel = !sortPanel;
                     settingsPanel = false;
                     brightnessPanel = false;
                     invalidate();
                     return true;
                 }
-                if (y > 55 && y < 105 && x > 100 && x < 260) {
+                if (y >= 55 && y <= 110 && x > 105 && x < 270) {
                     collectionMode = true;
                     activeCollection = null;
                     invalidate(); return true;
                 }
-                if (y > 55 && y < 105 && x < 105) {
+                if (y >= 55 && y <= 110 && x <= 105) {
                     collectionMode = false;
                     activeCollection = null;
                     invalidate(); return true;
@@ -1340,10 +1494,16 @@ public class MainActivity extends Activity {
                 if (y > 165 && y < 620 && collectionMode && activeCollection == null) {
                     ArrayList<String> folders = collectionNames();
                     int folderWidth = (int) ((width - 56 - 16) / 2);
-                    int index = Math.max(0, (int) ((y - 174) / 112)) * 2
+                    int index = Math.max(0, (int) ((y - 174) / 128)) * 2
                             + Math.max(0, Math.min(1, (int) ((x - 28) / (folderWidth + 16))));
                     if (index < folders.size()) {
-                        activeCollection = folders.get(index);
+                        int folderX = 28 + (index % 2) * (folderWidth + 16);
+                        if (x >= folderX + folderWidth - 62) {
+                            pendingCollectionAction = folders.get(index);
+                            collectionActionPanel = true;
+                        } else {
+                            activeCollection = folders.get(index);
+                        }
                         invalidate();
                     }
                     return true;
@@ -1351,7 +1511,7 @@ public class MainActivity extends Activity {
                 if (y > 120 && y < 620) {
                     int cardWidth = Math.max(92, (int) ((width - 56 - 16 * 2) / 3));
                     int column = Math.max(0, Math.min(2, (int) ((x - 28) / (cardWidth + 16))));
-                    int bookTop = collectionMode && activeCollection != null ? 160 : 132;
+                    int bookTop = collectionMode && activeCollection != null ? 172 : 140;
                     int row = Math.max(0, (int) ((y - bookTop) / (148 + 74)));
                     int index = row * 3 + column;
                     ArrayList<String> books = visibleBooks();
@@ -1472,6 +1632,8 @@ public class MainActivity extends Activity {
         if ("color_color".equals(key)) return english ? "Color" : "Renkli";
         if ("new_collection".equals(key)) return english ? "New collection" : "Yeni koleksiyon";
         if ("new_collection_message".equals(key)) return english ? "Name this collection." : "Bu koleksiyona bir ad ver.";
+        if ("rename".equals(key)) return english ? "Rename" : "Düzenle";
+        if ("delete".equals(key)) return english ? "Delete" : "Sil";
         if ("cancel".equals(key)) return english ? "Cancel" : "İptal";
         if ("extra_dim".equals(key)) return english ? "Extra dim" : "Ekstra karartma";
         if ("open_pdf".equals(key)) return english ? "Add PDF" : "PDF ekle";
