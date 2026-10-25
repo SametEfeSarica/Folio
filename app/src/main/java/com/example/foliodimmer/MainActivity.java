@@ -11,6 +11,8 @@ import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -23,9 +25,11 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -47,6 +51,7 @@ public class MainActivity extends Activity {
     private LinearLayout libraryPage;
     private View readerBar;
     private LinearLayout libraryList;
+    private EditText librarySearch;
     private float downX;
     private float downY;
     private boolean toolbarVisible = true;
@@ -85,21 +90,37 @@ public class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(24), dp(28), dp(24), dp(24));
 
-        TextView eyebrow = text("FOLIO LIBRARY", 12, Color.rgb(108, 99, 255));
+        TextView eyebrow = text("FOLIO  ·  READING SPACE", 12, Color.rgb(108, 99, 255));
         eyebrow.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         page.addView(eyebrow, wrap());
 
-        TextView title = text("The quiet shelf", 30, Color.rgb(24, 24, 29));
+        TextView title = text("Your library", 30, Color.rgb(24, 24, 29));
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         LinearLayout.LayoutParams titleParams = wrap();
         titleParams.topMargin = dp(12);
         page.addView(title, titleParams);
 
-        TextView subtitle = text("A small reading space for the end of the day.", 16,
+        TextView subtitle = text("Pick up where you left off.", 16,
                 Color.rgb(92, 88, 82));
         LinearLayout.LayoutParams subtitleParams = wrap();
         subtitleParams.topMargin = dp(6);
         page.addView(subtitle, subtitleParams);
+
+        librarySearch = new EditText(this);
+        librarySearch.setSingleLine(true);
+        librarySearch.setTextSize(15);
+        librarySearch.setHint("Search your library");
+        librarySearch.setPadding(dp(16), 0, dp(16), 0);
+        librarySearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                rebuildLibrary();
+            }
+            @Override public void afterTextChanged(Editable editable) { }
+        });
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(-1, dp(48));
+        searchParams.topMargin = dp(20);
+        page.addView(librarySearch, searchParams);
 
         TextView card = text("01\nA softer page\n\nAdjust the light before you read.", 20,
                 Color.rgb(50, 45, 41));
@@ -110,7 +131,7 @@ public class MainActivity extends Activity {
         cardParams.topMargin = dp(28);
         page.addView(card, cardParams);
 
-        TextView libraryTitle = text("My library", 21, Color.rgb(30, 30, 34));
+        TextView libraryTitle = text("Books", 21, Color.rgb(30, 30, 34));
         libraryTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         LinearLayout.LayoutParams libraryTitleParams = wrap();
         libraryTitleParams.topMargin = dp(26);
@@ -251,12 +272,36 @@ public class MainActivity extends Activity {
             return;
         }
         for (final String bookUri : books) {
-            Button row = button(displayName(Uri.parse(bookUri)));
-            row.setAllCaps(false);
-            row.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
-            row.setTextSize(16);
-            row.setTextColor(Color.rgb(50, 45, 41));
-            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, dp(54));
+            String name = displayName(Uri.parse(bookUri));
+            String query = librarySearch == null ? "" : librarySearch.getText().toString().trim().toLowerCase();
+            if (query.length() > 0 && !name.toLowerCase().contains(query)) continue;
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            row.setBackgroundColor(Color.rgb(250, 248, 243));
+            TextView bookMark = text("▤", 25, Color.rgb(108, 99, 255));
+            bookMark.setGravity(Gravity.CENTER);
+            row.addView(bookMark, new LinearLayout.LayoutParams(dp(42), -1));
+
+            LinearLayout details = new LinearLayout(this);
+            details.setOrientation(LinearLayout.VERTICAL);
+            TextView title = text(name.replace("▸  ", ""), 16, Color.rgb(50, 45, 41));
+            title.setSingleLine(true);
+            details.addView(title, wrap());
+            int total = preferences.getInt("count_" + bookUri.hashCode(), 0);
+            int page = preferences.getInt(PAGE_PREFIX + bookUri.hashCode(), 0);
+            TextView progressText = text(total > 0 ? (page + 1) + " of " + total : "PDF document",
+                    12, Color.rgb(125, 118, 108));
+            details.addView(progressText, wrap());
+            ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            progress.setMax(100);
+            progress.setProgress(total > 0 ? Math.min(100, ((page + 1) * 100) / total) : 0);
+            details.addView(progress, new LinearLayout.LayoutParams(-1, dp(4)));
+            row.addView(details, new LinearLayout.LayoutParams(0, -1, 1));
+
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, dp(68));
             rowParams.topMargin = dp(4);
             libraryList.addView(row, rowParams);
             row.setOnClickListener(new View.OnClickListener() {
@@ -278,6 +323,7 @@ public class MainActivity extends Activity {
             pdfFile = getContentResolver().openFileDescriptor(uri, "r");
             renderer = new PdfRenderer(pdfFile);
             currentUri = uri.toString();
+            preferences.edit().putInt("count_" + currentUri.hashCode(), renderer.getPageCount()).apply();
             currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
             currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
             libraryPage.setVisibility(View.GONE);
