@@ -6,7 +6,6 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
@@ -18,6 +17,11 @@ import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import java.net.URLDecoder;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -42,12 +46,19 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private LinearLayout libraryPage;
     private View readerBar;
+    private LinearLayout libraryList;
+    private float downX;
+    private float downY;
+    private boolean toolbarVisible = true;
+    private String currentUri;
     private boolean immersive;
 
     private static final int PICK_PDF = 40;
     private static final String PREFS = "folio_preferences";
     private static final String LAST_PDF = "last_pdf";
     private static final String DIM_LEVEL = "dim_level";
+    private static final String LIBRARY_URIS = "library_uris";
+    private static final String PAGE_PREFIX = "page_";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -58,6 +69,7 @@ public class MainActivity extends Activity {
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         setContentView(createScreen());
         updateDim(preferences.getInt(DIM_LEVEL, 0));
+        rebuildLibrary();
         String savedPdf = preferences.getString(LAST_PDF, null);
         if (savedPdf != null) {
             tryOpenPdf(Uri.parse(savedPdf));
@@ -97,6 +109,16 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, dp(170));
         cardParams.topMargin = dp(28);
         page.addView(card, cardParams);
+
+        TextView libraryTitle = text("My library", 21, Color.rgb(30, 30, 34));
+        libraryTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        LinearLayout.LayoutParams libraryTitleParams = wrap();
+        libraryTitleParams.topMargin = dp(26);
+        page.addView(libraryTitle, libraryTitleParams);
+
+        libraryList = new LinearLayout(this);
+        libraryList.setOrientation(LinearLayout.VERTICAL);
+        page.addView(libraryList, wrap());
 
         TextView controlTitle = text("Extra dim", 17, Color.rgb(30, 30, 34));
         LinearLayout.LayoutParams controlTitleParams = wrap();
@@ -192,6 +214,7 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_PDF && resultCode == RESULT_OK && data != null && data.getData() != null) {
@@ -199,9 +222,54 @@ public class MainActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(data.getData(),
                         Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) { }
+            rememberPdf(data.getData());
             preferences.edit().putString(LAST_PDF, data.getData().toString()).apply();
             tryOpenPdf(data.getData());
         }
+    }
+
+    private void rememberPdf(Uri uri) {
+        Set<String> saved = new HashSet<>(preferences.getStringSet(LIBRARY_URIS,
+                new HashSet<String>()));
+        saved.add(uri.toString());
+        preferences.edit().putStringSet(LIBRARY_URIS, saved).apply();
+        rebuildLibrary();
+    }
+
+    private void rebuildLibrary() {
+        if (libraryList == null || preferences == null) return;
+        libraryList.removeAllViews();
+        Set<String> saved = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
+        ArrayList<String> books = new ArrayList<>(saved);
+        Collections.sort(books);
+        String lastPdf = preferences.getString(LAST_PDF, null);
+        if (lastPdf != null && books.remove(lastPdf)) books.add(0, lastPdf);
+        if (books.isEmpty()) {
+            TextView empty = text("Your books will appear here.", 15, Color.rgb(110, 104, 96));
+            empty.setPadding(dp(4), dp(10), dp(4), dp(10));
+            libraryList.addView(empty, wrap());
+            return;
+        }
+        for (final String bookUri : books) {
+            Button row = button(displayName(Uri.parse(bookUri)));
+            row.setAllCaps(false);
+            row.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+            row.setTextSize(16);
+            row.setTextColor(Color.rgb(50, 45, 41));
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, dp(54));
+            rowParams.topMargin = dp(4);
+            libraryList.addView(row, rowParams);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View view) { tryOpenPdf(Uri.parse(bookUri)); }
+            });
+        }
+    }
+
+    private String displayName(Uri uri) {
+        String name = uri.getLastPathSegment();
+        if (name == null || name.length() == 0) name = "Untitled PDF";
+        try { name = URLDecoder.decode(name, "UTF-8"); } catch (Exception ignored) { }
+        return "▸  " + name;
     }
 
     private void tryOpenPdf(Uri uri) {
@@ -209,9 +277,12 @@ public class MainActivity extends Activity {
             closePdf();
             pdfFile = getContentResolver().openFileDescriptor(uri, "r");
             renderer = new PdfRenderer(pdfFile);
-            currentPage = 0;
+            currentUri = uri.toString();
+            currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
+            currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
             libraryPage.setVisibility(View.GONE);
             readerBar.setVisibility(View.VISIBLE);
+            toolbarVisible = true;
             pdfPreview.setVisibility(View.VISIBLE);
             showPage(currentPage);
         } catch (Exception error) {
@@ -225,6 +296,9 @@ public class MainActivity extends Activity {
     private void showPage(int pageNumber) {
         if (renderer == null || pageNumber < 0 || pageNumber >= renderer.getPageCount()) return;
         currentPage = pageNumber;
+        if (currentUri != null) {
+            preferences.edit().putInt(PAGE_PREFIX + currentUri.hashCode(), currentPage).apply();
+        }
         PdfRenderer.Page page = renderer.openPage(currentPage);
         Bitmap bitmap = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2,
                 Bitmap.Config.ARGB_8888);
@@ -268,10 +342,21 @@ public class MainActivity extends Activity {
                 if (event.getPointerCount() == 1 && !scaleDetector.isInProgress()) {
                     if (event.getAction() == MotionEvent.ACTION_DOWN) {
                         lastTouchX = event.getX(); lastTouchY = event.getY();
+                        downX = event.getX(); downY = event.getY();
                     } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
                         imageMatrix.postTranslate(event.getX() - lastTouchX, event.getY() - lastTouchY);
                         pdfPreview.setImageMatrix(imageMatrix);
                         lastTouchX = event.getX(); lastTouchY = event.getY();
+                    } else if (event.getAction() == MotionEvent.ACTION_UP) {
+                        float dx = event.getX() - downX;
+                        float dy = event.getY() - downY;
+                        if (currentScale <= 1.05f && Math.abs(dx) > dp(80)
+                                && Math.abs(dx) > Math.abs(dy)) {
+                            showPage(dx < 0 ? currentPage + 1 : currentPage - 1);
+                        } else if (Math.abs(dx) < dp(12) && Math.abs(dy) < dp(12)) {
+                            toolbarVisible = !toolbarVisible;
+                            readerBar.setVisibility(toolbarVisible ? View.VISIBLE : View.GONE);
+                        }
                     }
                 }
                 return true;
@@ -284,6 +369,7 @@ public class MainActivity extends Activity {
         readerBar.setVisibility(View.GONE);
         pdfPreview.setVisibility(View.GONE);
         libraryPage.setVisibility(View.VISIBLE);
+        rebuildLibrary();
     }
 
     private void closePdf() {
