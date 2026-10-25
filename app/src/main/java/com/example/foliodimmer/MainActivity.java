@@ -41,6 +41,8 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.graphics.drawable.GradientDrawable;
+import java.util.Comparator;
 
 public class MainActivity extends Activity {
     private View dimOverlay;
@@ -87,6 +89,8 @@ public class MainActivity extends Activity {
     private static final String SETUP_DONE = "setup_done";
     private static final String COLLECTIONS = "collections";
     private static final String COLLECTION_PREFIX = "collection_";
+    private static final String SORT_MODE = "sort_mode";
+    private static final String OPENED_PREFIX = "opened_";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -125,9 +129,9 @@ public class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable editable) { }
         });
-        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(250), dp(42));
-        searchParams.leftMargin = dp(24);
-        searchParams.topMargin = dp(45);
+        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(190), dp(38));
+        searchParams.leftMargin = dp(150);
+        searchParams.topMargin = dp(6);
         root.addView(searchBar, searchParams);
 
         brightnessBar = new SeekBar(this);
@@ -159,7 +163,7 @@ public class MainActivity extends Activity {
         reader.setGravity(Gravity.CENTER_VERTICAL);
         reader.setPadding(dp(8), dp(4), dp(8), dp(4));
         reader.setBackgroundColor(Color.rgb(244, 232, 201));
-        Button previous = smallButton("‹");
+        Button previous = premiumIconButton("‹");
         previous.setOnClickListener(view -> showPage(currentPage - 1));
         reader.addView(previous, new LinearLayout.LayoutParams(dp(48), dp(64)));
         LinearLayout pageControl = new LinearLayout(this);
@@ -179,10 +183,10 @@ public class MainActivity extends Activity {
         });
         pageControl.addView(pageSeekBar, new LinearLayout.LayoutParams(-1, dp(34)));
         reader.addView(pageControl, new LinearLayout.LayoutParams(0, dp(64), 1));
-        Button next = smallButton("›");
+        Button next = premiumIconButton("›");
         next.setOnClickListener(view -> showPage(currentPage + 1));
         reader.addView(next, new LinearLayout.LayoutParams(dp(48), dp(64)));
-        Button close = smallButton("×");
+        Button close = premiumIconButton("×");
         close.setOnClickListener(view -> closeReader());
         reader.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
         reader.setVisibility(View.GONE);
@@ -517,7 +521,10 @@ public class MainActivity extends Activity {
             pdfFile = getContentResolver().openFileDescriptor(uri, "r");
             renderer = new PdfRenderer(pdfFile);
             currentUri = uri.toString();
-            preferences.edit().putInt("count_" + currentUri.hashCode(), renderer.getPageCount()).apply();
+            preferences.edit()
+                    .putInt("count_" + currentUri.hashCode(), renderer.getPageCount())
+                    .putLong(OPENED_PREFIX + currentUri.hashCode(), System.currentTimeMillis())
+                    .apply();
             pageSeekBar.setMax(Math.max(1, renderer.getPageCount() - 1));
             currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
             currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
@@ -682,48 +689,32 @@ public class MainActivity extends Activity {
 
             drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
                     26, 30, 12, Color.rgb(78, 71, 57), false);
-            drawText(canvas, "☼", width - 238, 31, 19, Color.rgb(70, 63, 50), false);
-            drawText(canvas, "+", width - 194, 31, 21, Color.rgb(70, 63, 50), false);
-            drawText(canvas, "⚙", width - 148, 31, 17, Color.rgb(70, 63, 50), false);
-            drawText(canvas, "⛶", width - 102, 31, 17, Color.rgb(70, 63, 50), false);
-            drawText(canvas, "⌕", width - 54, 31, 22, Color.rgb(70, 63, 50), false);
+            drawIconButton(canvas, width - 252, 8, "☼");
+            drawIconButton(canvas, width - 207, 8, "+");
+            drawIconButton(canvas, width - 162, 8, "⚙");
+            drawIconButton(canvas, width - 117, 8, "⛶");
+            drawIconButton(canvas, width - 72, 8, "⌕");
 
-            drawText(canvas, t("books"), 28, 76, 16, Color.rgb(56, 49, 37), true);
-            drawText(canvas, t("collections"), 120, 76, 16, Color.rgb(108, 98, 80), false);
-            drawText(canvas, t("filter_all"), width - 128, 76, 13, Color.rgb(84, 76, 61), false);
+            drawText(canvas, t("books"), 28, 76, 16, Color.rgb(56, 49, 37), !collectionMode);
+            drawText(canvas, t("collections"), 120, 76, 16,
+                    collectionMode ? Color.rgb(56, 49, 37) : Color.rgb(108, 98, 80), collectionMode);
+            int sortMode = preferences.getInt(SORT_MODE, 2);
+            String sortLabel = sortMode == 0 ? t("sort_az")
+                    : sortMode == 1 ? t("sort_za") : t("sort_recent");
+            drawText(canvas, t("filter") + ": " + sortLabel, width - 160, 76, 13,
+                    Color.rgb(84, 76, 61), false);
             paint.setColor(Color.rgb(70, 63, 50));
-            canvas.drawRect(26, 91, 93, 94, paint);
+            if (collectionMode) canvas.drawRect(118, 91, 218, 94, paint);
+            else canvas.drawRect(26, 91, 93, 94, paint);
             paint.setColor(Color.rgb(192, 177, 143));
             canvas.drawRect(24, 106, width - 24, 107, paint);
 
             drawText(canvas, collectionMode && activeCollection != null ? activeCollection : t("library"),
                     28, 138, 27, Color.rgb(45, 40, 31), true);
-            drawText(canvas, searchBar != null && searchBar.getVisibility() == View.VISIBLE
-                    ? "" : t("search_library"), 28, 166, 14, Color.rgb(124, 111, 88), false);
             paint.setColor(Color.rgb(173, 157, 124));
             canvas.drawRect(26, 178, width - 26, 179, paint);
 
-            ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
-                    new HashSet<String>()));
-            String last = preferences.getString(LAST_PDF, null);
-            if (last != null && books.remove(last)) books.add(0, last);
-            if (searchBar != null && searchBar.getVisibility() == View.VISIBLE) {
-                String query = searchBar.getText().toString().trim().toLowerCase();
-                if (query.length() > 0) {
-                    ArrayList<String> filtered = new ArrayList<>();
-                    for (String book : books) {
-                        if (displayName(Uri.parse(book)).toLowerCase().contains(query)) filtered.add(book);
-                    }
-                    books = filtered;
-                }
-            }
-            if (collectionMode && activeCollection != null) {
-                ArrayList<String> filtered = new ArrayList<>();
-                for (String book : books) {
-                    if (activeCollection.equals(collectionFor(book))) filtered.add(book);
-                }
-                books = filtered;
-            }
+            ArrayList<String> books = visibleBooks();
             int left = 28;
             int top = 198;
             int gap = 16;
@@ -776,8 +767,20 @@ public class MainActivity extends Activity {
         private ArrayList<String> visibleBooks() {
             ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
                     new HashSet<String>()));
-            String last = preferences.getString(LAST_PDF, null);
-            if (last != null && books.remove(last)) books.add(0, last);
+            final int mode = preferences.getInt(SORT_MODE, 2);
+            Collections.sort(books, new Comparator<String>() {
+                @Override public int compare(String first, String second) {
+                    if (mode == 2) {
+                        long firstOpened = preferences.getLong(OPENED_PREFIX + first.hashCode(), 0L);
+                        long secondOpened = preferences.getLong(OPENED_PREFIX + second.hashCode(), 0L);
+                        int recent = Long.compare(secondOpened, firstOpened);
+                        if (recent != 0) return recent;
+                    }
+                    String firstName = displayName(Uri.parse(first)).toLowerCase(Locale.getDefault());
+                    String secondName = displayName(Uri.parse(second)).toLowerCase(Locale.getDefault());
+                    return mode == 1 ? secondName.compareTo(firstName) : firstName.compareTo(secondName);
+                }
+            });
             if (searchBar != null && searchBar.getVisibility() == View.VISIBLE) {
                 String query = searchBar.getText().toString().trim().toLowerCase();
                 if (query.length() > 0) {
@@ -862,12 +865,19 @@ public class MainActivity extends Activity {
             }
         }
 
+        private void drawIconButton(Canvas canvas, int x, int y, String icon) {
+            paint.setColor(Color.rgb(232, 220, 191));
+            canvas.drawRoundRect(new RectF(x, y, x + 36, y + 34), 8, 8, paint);
+            drawText(canvas, icon, x + 10, y + 23, 16, Color.rgb(65, 56, 43), true);
+        }
+
         private void drawText(Canvas canvas, String value, float x, float y, float size,
                               int color, boolean bold) {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(color);
             paint.setTextSize(size);
-            paint.setTypeface(Typeface.create("sans", bold ? Typeface.BOLD : Typeface.NORMAL));
+            paint.setTypeface(Typeface.create(bold ? "serif" : "sans",
+                    bold ? Typeface.BOLD : Typeface.NORMAL));
             canvas.drawText(value, x, y, paint);
         }
 
@@ -880,6 +890,7 @@ public class MainActivity extends Activity {
                 float x = event.getX() / density; float y = event.getY() / density;
                 float width = getWidth() / density; float height = getHeight() / density;
                 if (y < 58 && x > width - 260 && x < width - 210) {
+                    searchBar.setVisibility(View.GONE);
                     brightnessBar.setVisibility(brightnessBar.getVisibility() == View.VISIBLE
                             ? View.GONE : View.VISIBLE);
                     return true;
@@ -895,6 +906,7 @@ public class MainActivity extends Activity {
                     applyImmersiveMode(); return true;
                 }
                 if (y < 58 && x > width - 76) {
+                    brightnessBar.setVisibility(View.GONE);
                     searchBar.setVisibility(searchBar.getVisibility() == View.VISIBLE
                             ? View.GONE : View.VISIBLE);
                     if (searchBar.getVisibility() == View.VISIBLE) {
@@ -902,6 +914,10 @@ public class MainActivity extends Activity {
                         ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                                 .showSoftInput(searchBar, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
                     }
+                    return true;
+                }
+                if (y > 55 && y < 105 && x > width - 180) {
+                    showSortDialog();
                     return true;
                 }
                 if (y > 55 && y < 105 && x > 100 && x < 260) {
@@ -938,6 +954,19 @@ public class MainActivity extends Activity {
             }
             return true;
         }
+    }
+
+    private void showSortDialog() {
+        String[] options = {t("sort_az"), t("sort_za"), t("sort_recent")};
+        int selected = preferences.getInt(SORT_MODE, 2);
+        new AlertDialog.Builder(this)
+                .setTitle(t("sort"))
+                .setSingleChoiceItems(options, selected, (dialog, which) -> {
+                    preferences.edit().putInt(SORT_MODE, which).apply();
+                    dialog.dismiss();
+                    if (kindleHome != null) kindleHome.invalidate();
+                })
+                .show();
     }
 
     private void showBrightnessDialog() {
@@ -1024,6 +1053,11 @@ public class MainActivity extends Activity {
         if ("collections".equals(key)) return english ? "Collections" : "Koleksiyonlar";
         if ("authors".equals(key)) return english ? "Authors" : "Yazarlar";
         if ("filter_all".equals(key)) return english ? "Filter: All" : "Filtrele: Tümü";
+        if ("filter".equals(key)) return english ? "Sort" : "Sırala";
+        if ("sort".equals(key)) return english ? "Sort books" : "Kitapları sırala";
+        if ("sort_az".equals(key)) return "A-Z";
+        if ("sort_za".equals(key)) return "Z-A";
+        if ("sort_recent".equals(key)) return english ? "Recently opened" : "Son açılanlar";
         if ("extra_dim".equals(key)) return english ? "Extra dim" : "Ekstra karartma";
         if ("open_pdf".equals(key)) return english ? "Add PDF" : "PDF ekle";
         if ("fullscreen".equals(key)) return english ? "Fullscreen" : "Tam ekran";
@@ -1068,6 +1102,20 @@ public class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setTextSize(24);
+        return button;
+    }
+
+    private Button premiumIconButton(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setTextSize(22);
+        button.setTextColor(Color.rgb(66, 57, 43));
+        button.setGravity(Gravity.CENTER);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(231, 218, 188));
+        background.setCornerRadius(dp(10));
+        button.setBackground(background);
+        button.setPadding(0, 0, 0, 0);
         return button;
     }
 
