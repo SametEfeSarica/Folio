@@ -68,6 +68,9 @@ public class MainActivity extends Activity {
     private EditText librarySearch;
     private float downX;
     private float downY;
+    private float multiDownY;
+    private float multiLastY;
+    private boolean multiGesture;
     private boolean toolbarVisible = true;
     private String currentUri;
     private boolean immersive;
@@ -81,6 +84,9 @@ public class MainActivity extends Activity {
     private String activeCollection;
     private boolean settingsPanel;
     private boolean sortPanel;
+    private boolean brightnessPanel;
+    private boolean languageExpanded;
+    private boolean colorExpanded;
     private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
 
     private static final int PICK_PDF = 40;
@@ -95,6 +101,7 @@ public class MainActivity extends Activity {
     private static final String COLLECTION_PREFIX = "collection_";
     private static final String SORT_MODE = "sort_mode";
     private static final String OPENED_PREFIX = "opened_";
+    private static final String COLOR_MODE = "color_mode";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -105,6 +112,8 @@ public class MainActivity extends Activity {
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         language = preferences.getString(LANGUAGE, "tr");
         setContentView(createScreen());
+        immersive = true;
+        applyImmersiveMode();
         updateDim(preferences.getInt(DIM_LEVEL, 0));
         rebuildLibrary();
         if (!preferences.getBoolean(SETUP_DONE, false)) showSetup();
@@ -126,6 +135,8 @@ public class MainActivity extends Activity {
         searchBar.setHint(t("search_library"));
         searchBar.setPadding(dp(12), 0, dp(12), 0);
         searchBar.setVisibility(View.VISIBLE);
+        searchBar.setCursorVisible(false);
+        searchBar.setOnFocusChangeListener((view, hasFocus) -> searchBar.setCursorVisible(hasFocus));
         searchBar.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -208,6 +219,8 @@ public class MainActivity extends Activity {
         dimOverlay.setBackgroundColor(Color.BLACK);
         dimOverlay.setClickable(false);
         root.addView(dimOverlay, new FrameLayout.LayoutParams(-1, -1));
+        root.setFocusableInTouchMode(true);
+        root.requestFocus();
         return root;
     }
 
@@ -591,6 +604,7 @@ public class MainActivity extends Activity {
         if (pageBitmap != null) pageBitmap.recycle();
         pageBitmap = bitmap;
         pdfPreview.setImageBitmap(pageBitmap);
+        pdfPreview.setColorFilter(isColorMode() ? null : eInkFilter());
         pageLabel.setText((currentPage + 1) + " / " + renderer.getPageCount());
         if (pageSeekBar != null) pageSeekBar.setProgress(currentPage);
         pdfPreview.post(new Runnable() {
@@ -622,6 +636,30 @@ public class MainActivity extends Activity {
         });
         return new View.OnTouchListener() {
             @Override public boolean onTouch(View view, MotionEvent event) {
+                if (event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN
+                        && event.getPointerCount() >= 2) {
+                    multiGesture = true;
+                    multiDownY = averagePointerY(event);
+                    multiLastY = multiDownY;
+                    return true;
+                }
+                if (multiGesture) {
+                    if (event.getActionMasked() == MotionEvent.ACTION_MOVE
+                            && event.getPointerCount() >= 2) {
+                        multiLastY = averagePointerY(event);
+                        return true;
+                    }
+                    if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                        float change = multiLastY - multiDownY;
+                        if (Math.abs(change) > dp(45)) {
+                            toolbarVisible = change > 0;
+                            readerBar.setVisibility(toolbarVisible ? View.VISIBLE : View.GONE);
+                        }
+                        multiGesture = false;
+                        return true;
+                    }
+                    return true;
+                }
                 scaleDetector.onTouchEvent(event);
                 if (event.getPointerCount() == 1 && !scaleDetector.isInProgress()) {
                     if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -649,6 +687,12 @@ public class MainActivity extends Activity {
         };
     }
 
+    private float averagePointerY(MotionEvent event) {
+        float total = 0;
+        for (int i = 0; i < event.getPointerCount(); i++) total += event.getY(i);
+        return total / Math.max(1, event.getPointerCount());
+    }
+
     private void closeReader() {
         closePdf();
         readerBar.setVisibility(View.GONE);
@@ -656,7 +700,21 @@ public class MainActivity extends Activity {
         libraryPage.setVisibility(View.VISIBLE);
         if (searchBar != null) searchBar.setVisibility(View.VISIBLE);
         if (brightnessBar != null) brightnessBar.setVisibility(View.GONE);
+        brightnessPanel = false;
         rebuildLibrary();
+    }
+
+    private boolean isColorMode() {
+        return "color".equals(preferences.getString(COLOR_MODE, "mono"));
+    }
+
+    private ColorMatrixColorFilter eInkFilter() {
+        return new ColorMatrixColorFilter(new ColorMatrix(new float[] {
+                0.35f, 0.55f, 0.10f, 0, 0,
+                0.35f, 0.55f, 0.10f, 0, 0,
+                0.35f, 0.55f, 0.10f, 0, 0,
+                0, 0, 0, 1, 0
+        }));
     }
 
     private void closePdf() {
@@ -722,11 +780,10 @@ public class MainActivity extends Activity {
 
             drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
                     26, 30, 12, Color.rgb(78, 71, 57), false);
-            drawIconButton(canvas, width - 252, 8, "☼");
-            drawIconButton(canvas, width - 207, 8, "+");
-            drawIconButton(canvas, width - 162, 8, "⚙");
-            drawIconButton(canvas, width - 117, 8, "⛶");
-            drawIconButton(canvas, width - 72, 8, "⌕");
+            drawIconButton(canvas, 108, 8, "⌕");
+            drawIconButton(canvas, width - 160, 8, "☼");
+            drawIconButton(canvas, width - 115, 8, "+");
+            drawIconButton(canvas, width - 70, 8, "⚙");
 
             drawText(canvas, t("books"), 28, 76, 16, Color.rgb(56, 49, 37), !collectionMode);
             drawText(canvas, t("collections"), 120, 76, 16,
@@ -770,12 +827,7 @@ public class MainActivity extends Activity {
                             Color.rgb(96, 116, 105), Color.rgb(75, 87, 111)};
                     Bitmap thumbnail = loadThumbnail(books.get(i));
                     if (thumbnail != null) {
-                        paint.setColorFilter(new ColorMatrixColorFilter(new ColorMatrix(new float[] {
-                                0.35f, 0.55f, 0.10f, 0, 0,
-                                0.35f, 0.55f, 0.10f, 0, 0,
-                                0.35f, 0.55f, 0.10f, 0, 0,
-                                0, 0, 0, 1, 0
-                        })));
+                        paint.setColorFilter(isColorMode() ? null : eInkFilter());
                         canvas.drawBitmap(thumbnail, null, new RectF(x, y, x + cardWidth,
                                 y + coverHeight), paint);
                         paint.setColorFilter(null);
@@ -802,6 +854,7 @@ public class MainActivity extends Activity {
                 }
             }
 
+            if (brightnessPanel) drawBrightnessPanel(canvas, width);
             if (sortPanel) drawSortPanel(canvas, width);
             if (settingsPanel) drawSettingsPanel(canvas, width);
             canvas.restore();
@@ -881,20 +934,54 @@ public class MainActivity extends Activity {
             paint.setStyle(Paint.Style.FILL);
         }
 
+        private void drawBrightnessPanel(Canvas canvas, int width) {
+            paint.setColor(Color.argb(45, 40, 39, 35));
+            canvas.drawRect(0, 0, width, getHeight(), paint);
+            paint.setColor(Color.rgb(239, 237, 230));
+            canvas.drawRect(width - 270, 54, width - 22, 166, paint);
+            drawText(canvas, t("brightness"), width - 246, 82, 16,
+                    Color.rgb(54, 53, 49), true);
+            drawText(canvas, preferences.getInt(DIM_LEVEL, 0) + "%", width - 70, 82, 13,
+                    Color.rgb(75, 73, 67), false);
+            paint.setColor(Color.rgb(80, 78, 71));
+            paint.setStrokeWidth(2);
+            canvas.drawLine(width - 246, 118, width - 46, 118, paint);
+            float knob = width - 246 + 200 * Math.min(80,
+                    preferences.getInt(DIM_LEVEL, 0)) / 80f;
+            paint.setColor(Color.rgb(55, 53, 48));
+            canvas.drawCircle(knob, 118, 7, paint);
+            drawText(canvas, t("brightness_hint"), width - 246, 148, 11,
+                    Color.rgb(112, 109, 101), false);
+        }
+
         private void drawSettingsPanel(Canvas canvas, int width) {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRect(width - 270, 54, width - 22, 246, paint);
+            canvas.drawRect(width - 270, 54, width - 22, 318, paint);
             drawText(canvas, t("settings"), width - 246, 82, 16, Color.rgb(54, 53, 49), true);
-            drawText(canvas, t("language"), width - 246, 116, 14, Color.rgb(61, 60, 55), false);
-            drawText(canvas, "Türkçe", width - 220, 148, 14,
-                    "tr".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
-                    "tr".equals(language));
-            drawText(canvas, "English", width - 220, 180, 14,
-                    "en".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
-                    "en".equals(language));
-            drawText(canvas, t("fullscreen"), width - 246, 218, 14, Color.rgb(61, 60, 55), false);
+            drawText(canvas, t("language") + (languageExpanded ? "  ˄" : "  ˅"),
+                    width - 246, 116, 14, Color.rgb(61, 60, 55), true);
+            int colorTop = 148;
+            if (languageExpanded) {
+                drawText(canvas, "Türkçe", width - 220, 148, 14,
+                        "tr".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
+                        "tr".equals(language));
+                drawText(canvas, "English", width - 220, 180, 14,
+                        "en".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
+                        "en".equals(language));
+                colorTop = 214;
+            }
+            drawText(canvas, t("colors") + (colorExpanded ? "  ˄" : "  ˅"),
+                    width - 246, colorTop, 14, Color.rgb(61, 60, 55), true);
+            if (colorExpanded) {
+                drawText(canvas, t("mono_color"), width - 220, colorTop + 32, 14,
+                        isColorMode() ? Color.rgb(130, 127, 119) : Color.rgb(45, 44, 40),
+                        !isColorMode());
+                drawText(canvas, t("color_color"), width - 220, colorTop + 64, 14,
+                        isColorMode() ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
+                        isColorMode());
+            }
             paint.setStyle(Paint.Style.FILL);
         }
 
@@ -1025,6 +1112,16 @@ public class MainActivity extends Activity {
                 float density = getResources().getDisplayMetrics().density;
                 float x = event.getX() / density; float y = event.getY() / density;
                 float width = getWidth() / density; float height = getHeight() / density;
+                if (brightnessPanel) {
+                    if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
+                        int value = Math.max(0, Math.min(80,
+                                Math.round((x - (width - 246)) / 200f * 80f)));
+                        updateDim(value);
+                    }
+                    brightnessPanel = false;
+                    invalidate();
+                    return true;
+                }
                 if (sortPanel) {
                     if (x >= width - 270 && x <= width - 22 && y >= 140 && y <= 270) {
                         int selected = Math.max(0, Math.min(2, (int) ((y - 140) / 34)));
@@ -1035,54 +1132,66 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (settingsPanel) {
-                    if (x >= width - 270 && x <= width - 22 && y >= 128 && y <= 160) {
-                        language = "tr";
+                    if (x >= width - 270 && x <= width - 22 && y >= 92 && y <= 130) {
+                        languageExpanded = !languageExpanded;
+                        colorExpanded = false;
+                        invalidate();
+                    } else if (languageExpanded && x >= width - 270 && x <= width - 22
+                            && y > 130 && y <= 198) {
+                        language = y <= 164 ? "tr" : "en";
                         preferences.edit().putString(LANGUAGE, language).apply();
-                        settingsPanel = false;
+                        languageExpanded = false;
                         recreate();
-                    } else if (x >= width - 270 && x <= width - 22 && y > 160 && y <= 194) {
-                        language = "en";
-                        preferences.edit().putString(LANGUAGE, language).apply();
-                        settingsPanel = false;
-                        recreate();
-                    } else if (x >= width - 270 && x <= width - 22 && y > 194 && y <= 236) {
-                        immersive = !immersive;
-                        applyImmersiveMode();
-                        settingsPanel = false;
+                    } else if (x >= width - 270 && x <= width - 22
+                            && y >= (languageExpanded ? 198 : 130)
+                            && y <= (languageExpanded ? 232 : 170)) {
+                        colorExpanded = !colorExpanded;
+                        invalidate();
+                    } else if (colorExpanded && x >= width - 270 && x <= width - 22
+                            && y > (languageExpanded ? 232 : 170)
+                            && y <= (languageExpanded ? 300 : 238)) {
+                        boolean color = y > (languageExpanded ? 266 : 202);
+                        preferences.edit().putString(COLOR_MODE, color ? "color" : "mono").apply();
+                        if (pdfPreview != null) pdfPreview.setColorFilter(color ? null : eInkFilter());
+                        colorExpanded = false;
                         invalidate();
                     } else {
                         settingsPanel = false;
+                        languageExpanded = false;
+                        colorExpanded = false;
                         invalidate();
                     }
                     return true;
                 }
-                if (y < 58 && x > width - 260 && x < width - 210) {
+                if (y < 58 && x >= width - 160 && x < width - 115) {
+                    brightnessPanel = !brightnessPanel;
                     settingsPanel = false;
                     sortPanel = false;
-                    searchBar.setVisibility(View.GONE);
-                    brightnessBar.setVisibility(brightnessBar.getVisibility() == View.VISIBLE
-                            ? View.GONE : View.VISIBLE);
+                    brightnessBar.setVisibility(View.GONE);
+                    searchBar.clearFocus();
+                    invalidate();
                     return true;
                 }
-                if (y < 58 && x > width - 210 && x < width - 165) {
+                if (y < 58 && x >= width - 115 && x < width - 70) {
                     settingsPanel = false;
                     sortPanel = false;
+                    brightnessPanel = false;
                     pickPdf(); return true;
                 }
-                if (y < 58 && x > width - 165 && x < width - 120) {
+                if (y < 58 && x >= width - 70) {
                     settingsPanel = !settingsPanel;
                     sortPanel = false;
-                    searchBar.setVisibility(View.VISIBLE);
+                    brightnessPanel = false;
+                    languageExpanded = false;
+                    colorExpanded = false;
+                    searchBar.clearFocus();
                     invalidate(); return true;
                 }
-                if (y < 58 && x > width - 120 && x < width - 76) {
-                    immersive = !immersive;
-                    applyImmersiveMode(); return true;
-                }
-                if (y < 58 && x > width - 76) {
-                    brightnessBar.setVisibility(View.GONE);
+                if (y < 58 && x >= 96 && x < 148) {
+                    brightnessPanel = false;
                     searchBar.setVisibility(View.VISIBLE);
                     searchBar.requestFocus();
+                    searchBar.setCursorVisible(true);
                     ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                             .showSoftInput(searchBar, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
                     return true;
@@ -1090,6 +1199,7 @@ public class MainActivity extends Activity {
                 if (y > 55 && y < 105 && x > width - 180) {
                     sortPanel = !sortPanel;
                     settingsPanel = false;
+                    brightnessPanel = false;
                     invalidate();
                     return true;
                 }
@@ -1243,6 +1353,9 @@ public class MainActivity extends Activity {
         if ("sort_za".equals(key)) return "Z-A";
         if ("sort_recent".equals(key)) return english ? "Recently opened" : "Son açılanlar";
         if ("settings".equals(key)) return english ? "Settings" : "Ayarlar";
+        if ("colors".equals(key)) return english ? "Display colors" : "Renkler";
+        if ("mono_color".equals(key)) return english ? "Black and white" : "Siyah beyaz e-ink";
+        if ("color_color".equals(key)) return english ? "Color e-ink" : "Renkli e-ink";
         if ("new_collection".equals(key)) return english ? "New collection" : "Yeni koleksiyon";
         if ("new_collection_message".equals(key)) return english ? "Name this collection." : "Bu koleksiyona bir ad ver.";
         if ("cancel".equals(key)) return english ? "Cancel" : "İptal";
@@ -1296,9 +1409,14 @@ public class MainActivity extends Activity {
     private Button premiumIconButton(String label) {
         Button button = new Button(this);
         button.setText(label);
-        button.setTextSize(22);
+        button.setTextSize(18);
         button.setTextColor(Color.rgb(66, 57, 43));
         button.setGravity(Gravity.CENTER);
+        button.setAllCaps(false);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
         GradientDrawable background = new GradientDrawable();
         background.setColor(Color.rgb(220, 218, 211));
         background.setCornerRadius(dp(10));
