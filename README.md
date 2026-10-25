@@ -13,7 +13,7 @@ The first usable prototype provides:
 
 ## Build
 
-Open this folder in Android Studio with an Android SDK and Gradle support installed. The project uses Android Gradle Plugin `8.13.2`, Gradle `8.13`, compiles against SDK 35, and targets/minimizes API 22. Android Studio should use JDK 17 for Gradle.
+Open this folder in Android Studio with an Android SDK and Gradle support installed. The project uses Android Gradle Plugin `8.13.2`, Gradle `8.13`, compiles against SDK 35, and targets/minimizes API 22. Android Studio should use JDK 17 for Gradle. The plugin repositories are declared in `settings.gradle` so the Android plugin can be resolved from Google's Maven repository.
 
 From a terminal with Gradle available:
 
