@@ -1,4 +1,4 @@
-# Folio v0.13
+# Folio v0.14
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
@@ -46,6 +46,9 @@ The eighth prototype provides:
 - Separate boxed next and close controls in the PDF toolbar.
 - Rounded compact brightness and settings panels with a 0–100 dim range.
 - Search field background matched to the e-ink library surface.
+- Collection create, rename, and delete actions with an in-theme editor panel.
+- Larger portrait-oriented typography and controls.
+- Continuous brightness slider dragging.
 - A persistent A-Z, Z-A, and recently opened sorting menu.
 - Recent-book ordering based on the last time each PDF was opened.
 - Search controls positioned in the top bar without covering the library content.
