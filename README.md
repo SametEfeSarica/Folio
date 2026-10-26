@@ -1,4 +1,4 @@
-# Folio v0.15
+# Folio v0.15.1
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
