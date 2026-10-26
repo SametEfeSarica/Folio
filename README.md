@@ -1,4 +1,4 @@
-# Folio v0.14
+# Folio v0.15
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
@@ -49,6 +49,11 @@ The eighth prototype provides:
 - Collection create, rename, and delete actions with an in-theme editor panel.
 - Larger portrait-oriented typography and controls.
 - Continuous brightness slider dragging.
+- Bottom full-screen reader toolbar for tablet ergonomics.
+- Six recently opened cover cards plus a scrollable all-books list.
+- Deeper extra-dim range and an adjustable blue-light filter.
+- Collections start empty and support rename, delete, five folder colors, and library-only multi-select book assignment.
+- Larger spaced settings and sorting panels with a dimmed search field.
 - A persistent A-Z, Z-A, and recently opened sorting menu.
 - Recent-book ordering based on the last time each PDF was opened.
 - Search controls positioned in the top bar without covering the library content.
