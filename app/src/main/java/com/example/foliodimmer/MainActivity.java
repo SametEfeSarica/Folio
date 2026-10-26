@@ -90,9 +90,16 @@ public class MainActivity extends Activity {
     private boolean colorExpanded;
     private boolean collectionEditor;
     private boolean collectionActionPanel;
+    private boolean collectionColorPanel;
+    private boolean collectionPickerPanel;
     private EditText collectionInput;
     private String editingCollection;
     private String pendingCollectionAction;
+    private String collectionPickerTarget;
+    private final Set<String> selectedCollectionBooks = new HashSet<>();
+    private float homeContentOffset;
+    private boolean homeDragging;
+    private View blueLightOverlay;
     private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
 
     private static final int PICK_PDF = 40;
@@ -108,6 +115,8 @@ public class MainActivity extends Activity {
     private static final String SORT_MODE = "sort_mode";
     private static final String OPENED_PREFIX = "opened_";
     private static final String COLOR_MODE = "color_mode";
+    private static final String BLUE_LIGHT_LEVEL = "blue_light_level";
+    private static final String COLLECTION_COLOR_PREFIX = "collection_color_";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -117,6 +126,7 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         language = preferences.getString(LANGUAGE, "tr");
+        migrateLegacyGeneralCollection();
         setContentView(createScreen());
         immersive = true;
         applyImmersiveMode();
@@ -159,9 +169,10 @@ public class MainActivity extends Activity {
         searchBackground.setStroke(dp(1), Color.rgb(178, 176, 168));
         searchBackground.setCornerRadius(dp(4));
         searchBar.setBackground(searchBackground);
-        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(dp(180), dp(40));
-        searchParams.leftMargin = dp(100);
-        searchParams.topMargin = dp(5);
+        FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(-1, dp(44));
+        searchParams.leftMargin = dp(24);
+        searchParams.rightMargin = dp(24);
+        searchParams.topMargin = dp(52);
         root.addView(searchBar, searchParams);
 
         brightnessBar = new SeekBar(this);
@@ -185,19 +196,24 @@ public class MainActivity extends Activity {
         pdfPreview.setScaleType(ImageView.ScaleType.MATRIX);
         pdfPreview.setVisibility(View.GONE);
         FrameLayout.LayoutParams previewParams = new FrameLayout.LayoutParams(-1, -1);
-        previewParams.setMargins(dp(16), dp(84), dp(16), dp(16));
+        previewParams.setMargins(0, 0, 0, 0);
         root.addView(pdfPreview, previewParams);
 
         ReaderToolbarView reader = new ReaderToolbarView(this);
         readerBar = reader;
         reader.setVisibility(View.GONE);
-        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(82), Gravity.TOP));
+        root.addView(reader, new FrameLayout.LayoutParams(-1, dp(82), Gravity.BOTTOM));
         pdfPreview.setOnTouchListener(createPdfTouchListener());
 
         dimOverlay = new View(this);
         dimOverlay.setBackgroundColor(Color.BLACK);
         dimOverlay.setClickable(false);
         root.addView(dimOverlay, new FrameLayout.LayoutParams(-1, -1));
+        blueLightOverlay = new View(this);
+        blueLightOverlay.setBackgroundColor(Color.rgb(255, 188, 72));
+        blueLightOverlay.setClickable(false);
+        root.addView(blueLightOverlay, new FrameLayout.LayoutParams(-1, -1));
+        updateBlueLight(preferences.getInt(BLUE_LIGHT_LEVEL, 0));
         root.setFocusableInTouchMode(true);
         root.requestFocus();
         return root;
@@ -417,7 +433,6 @@ public class MainActivity extends Activity {
                             Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 } catch (Exception ignored) { }
                 rememberPdf(uri);
-                saveCollection(uri, t("general"));
             }
             if (!selected.isEmpty()) {
                 preferences.edit().putString(LAST_PDF, selected.get(0).toString()).apply();
@@ -432,6 +447,21 @@ public class MainActivity extends Activity {
         saved.add(uri.toString());
         preferences.edit().putStringSet(LIBRARY_URIS, saved).apply();
         rebuildLibrary();
+    }
+
+    private void migrateLegacyGeneralCollection() {
+        Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                new HashSet<String>()));
+        names.remove("Genel");
+        names.remove("General");
+        SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
+        for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
+            String value = preferences.getString(COLLECTION_PREFIX + book.hashCode(), null);
+            if ("Genel".equals(value) || "General".equals(value)) {
+                editor.remove(COLLECTION_PREFIX + book.hashCode());
+            }
+        }
+        editor.apply();
     }
 
     private void showCollectionDialog(final Uri uri) {
@@ -467,6 +497,7 @@ public class MainActivity extends Activity {
 
     private void showCollectionEditor(String existingName) {
         collectionActionPanel = false;
+        collectionColorPanel = false;
         collectionEditor = true;
         editingCollection = existingName;
         collectionInput = new EditText(this);
@@ -489,6 +520,7 @@ public class MainActivity extends Activity {
         collectionInput.requestFocus();
         ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                 .showSoftInput(collectionInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        refreshPanelDimming();
         if (kindleHome != null) kindleHome.invalidate();
     }
 
@@ -521,6 +553,7 @@ public class MainActivity extends Activity {
         collectionInput = null;
         collectionEditor = false;
         editingCollection = null;
+        refreshPanelDimming();
         if (kindleHome != null) kindleHome.invalidate();
     }
 
@@ -531,12 +564,15 @@ public class MainActivity extends Activity {
         SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
         for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
             if (name.equals(preferences.getString(COLLECTION_PREFIX + book.hashCode(), null))) {
-                editor.putString(COLLECTION_PREFIX + book.hashCode(), t("general"));
+                editor.remove(COLLECTION_PREFIX + book.hashCode());
             }
         }
+        editor.remove(COLLECTION_COLOR_PREFIX + name.hashCode());
         editor.apply();
         collectionActionPanel = false;
+        collectionColorPanel = false;
         pendingCollectionAction = null;
+        refreshPanelDimming();
         if (kindleHome != null) kindleHome.invalidate();
     }
 
@@ -652,6 +688,7 @@ public class MainActivity extends Activity {
             readerBar.setVisibility(View.VISIBLE);
             toolbarVisible = true;
             pdfPreview.setVisibility(View.VISIBLE);
+            applyBlueLightToReader();
             showPage(currentPage);
         } catch (Exception error) {
             closePdf();
@@ -909,6 +946,7 @@ public class MainActivity extends Activity {
         if (searchBar != null) searchBar.setVisibility(View.VISIBLE);
         if (brightnessBar != null) brightnessBar.setVisibility(View.GONE);
         brightnessPanel = false;
+        refreshPanelDimming();
         rebuildLibrary();
     }
 
@@ -947,7 +985,7 @@ public class MainActivity extends Activity {
 
     private void updateDim(int value) {
         if (dimOverlay != null) {
-            dimOverlay.setAlpha(Math.min(0.32f, value / 100f));
+            dimOverlay.setAlpha(Math.min(0.78f, value / 100f * 0.78f));
         }
         if (amountLabel != null) {
             amountLabel.setText(value + "%");
@@ -955,6 +993,22 @@ public class MainActivity extends Activity {
         if (preferences != null) {
             preferences.edit().putInt(DIM_LEVEL, value).apply();
         }
+    }
+
+    private void updateBlueLight(int value) {
+        int safe = Math.max(0, Math.min(100, value));
+        if (blueLightOverlay != null) blueLightOverlay.setAlpha(safe / 100f * 0.24f);
+        if (preferences != null) preferences.edit().putInt(BLUE_LIGHT_LEVEL, safe).apply();
+    }
+
+    private void applyBlueLightToReader() {
+        if (pdfPreview != null) pdfPreview.setColorFilter(isColorMode() ? null : eInkFilter());
+    }
+
+    private void refreshPanelDimming() {
+        boolean dimSearch = settingsPanel || sortPanel || brightnessPanel
+                || collectionActionPanel || collectionEditor || collectionPickerPanel;
+        if (searchBar != null) searchBar.setAlpha(dimSearch ? 0.58f : 1f);
     }
 
     private void applyImmersiveMode() {
@@ -987,89 +1041,127 @@ public class MainActivity extends Activity {
             canvas.drawRect(0, 0, width, height, paint);
 
             drawText(canvas, new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()),
-                    18, 32, 14, Color.rgb(78, 71, 57), false);
-            drawIconButton(canvas, width - 182, 5, "☼");
-            drawIconButton(canvas, width - 132, 5, "+");
-            drawIconButton(canvas, width - 82, 5, "⚙");
+                    24, 29, 15, Color.rgb(78, 71, 57), false);
+            drawIconButton(canvas, width - 166, 8, "☼");
+            drawIconButton(canvas, width - 116, 8, "+");
+            drawIconButton(canvas, width - 66, 8, "⚙");
 
-            drawText(canvas, t("books"), 20, 82, 18, Color.rgb(56, 49, 37), !collectionMode);
-            drawText(canvas, t("collections"), 126, 82, 18,
+            drawText(canvas, t("books"), 24, 129, 19, Color.rgb(56, 49, 37), !collectionMode);
+            drawText(canvas, t("collections"), 142, 129, 19,
                     collectionMode ? Color.rgb(56, 49, 37) : Color.rgb(108, 98, 80), collectionMode);
             int sortMode = preferences.getInt(SORT_MODE, 2);
             String sortLabel = sortMode == 0 ? t("sort_az")
                     : sortMode == 1 ? t("sort_za") : t("sort_recent");
             paint.setColor(Color.rgb(220, 218, 211));
-            canvas.drawRoundRect(new RectF(width - 178, 57, width - 22, 96), 6, 6, paint);
-            drawText(canvas, t("filter") + ": " + sortLabel, width - 166, 82, 14,
+            canvas.drawRoundRect(new RectF(width - 190, 105, width - 22, 142), 8, 8, paint);
+            drawText(canvas, t("filter") + ": " + sortLabel, width - 178, 129, 14,
                     Color.rgb(84, 76, 61), false);
             paint.setColor(Color.rgb(70, 63, 50));
-            if (collectionMode) canvas.drawRect(124, 98, 246, 101, paint);
-            else canvas.drawRect(20, 98, 100, 101, paint);
+            if (collectionMode) canvas.drawRect(142, 145, 270, 148, paint);
+            else canvas.drawRect(24, 145, 104, 148, paint);
             paint.setColor(Color.rgb(178, 176, 168));
-            canvas.drawRect(18, 120, width - 18, 121, paint);
+            canvas.drawRect(22, 164, width - 22, 165, paint);
             if (collectionMode && activeCollection != null) {
-                drawText(canvas, "‹  " + activeCollection, 20, 150, 20,
+                drawText(canvas, "‹  " + activeCollection, 24, 192, 21,
                         Color.rgb(65, 63, 57), true);
             }
-
+            canvas.save();
+            canvas.clipRect(0, 166, width, height);
+            canvas.translate(0, homeContentOffset);
             ArrayList<String> books = visibleBooks();
-            int left = 28;
-            int top = collectionMode && activeCollection != null ? 172 : 140;
-            int gap = 16;
-            int cardWidth = Math.max(dp(92), (width - 56 - gap * 2) / 3);
-            int coverHeight = dp(148);
             if (collectionMode && activeCollection == null) {
                 drawNewCollectionButton(canvas, width);
-                top = 174;
-                drawCollections(canvas, left, top, cardWidth, coverHeight, width);
-            } else if (books.isEmpty()) {
-                drawText(canvas, t("empty_library"), 28, top + 45, 15, Color.rgb(113, 101, 80), false);
-                drawText(canvas, "+  " + t("open_pdf"), 28, top + 82, 15, Color.rgb(74, 63, 43), true);
+                drawCollections(canvas, 24, 232, 0, 0, width);
             } else {
-                int visible = Math.min(6, books.size());
-                for (int i = 0; i < visible; i++) {
-                    int column = i % 3;
-                    int row = i / 3;
-                    int x = left + column * (cardWidth + gap);
-                    int y = top + row * (coverHeight + 74);
-                    int[] colors = {Color.rgb(111, 74, 55), Color.rgb(196, 155, 92),
-                            Color.rgb(96, 116, 105), Color.rgb(75, 87, 111)};
-                    Bitmap thumbnail = loadThumbnail(books.get(i));
-                    if (thumbnail != null) {
-                        paint.setColorFilter(isColorMode() ? null : eInkFilter());
-                        canvas.drawBitmap(thumbnail, null, new RectF(x, y, x + cardWidth,
-                                y + coverHeight), paint);
-                        paint.setColorFilter(null);
-                    } else {
-                        paint.setColor(Color.rgb(188, 185, 175));
-                        canvas.drawRect(x, y, x + cardWidth, y + coverHeight, paint);
-                    }
-                    drawText(canvas, "FOLIO", x + 8, y + 24, 11, Color.rgb(245, 244, 239), true);
-                    String title = displayName(Uri.parse(books.get(i))).replace("▸  ", "");
-                    if (title.length() > 18) title = title.substring(0, 16) + "…";
-                    drawText(canvas, title, x + 8, y + coverHeight - 20, 13, Color.rgb(245, 244, 239), true);
-                    int total = preferences.getInt("count_" + books.get(i).hashCode(), 0);
-                    int page = preferences.getInt(PAGE_PREFIX + books.get(i).hashCode(), 0);
-                    int percent = total > 0 ? (page >= total - 1 ? 100 : ((page + 1) * 100) / total) : 0;
-                    drawText(canvas, total > 0 ? "%" + percent + " " + t("read") : t("new_book"),
-                            x, y + coverHeight + 24, 14, Color.rgb(75, 73, 67), false);
-                    paint.setColor(Color.rgb(145, 142, 133));
-                    canvas.drawRect(x, y + coverHeight + 32, x + cardWidth, y + coverHeight + 35, paint);
-                    if (total > 0) {
-                        paint.setColor(Color.rgb(70, 68, 63));
-                        canvas.drawRect(x, y + coverHeight + 32,
-                                x + (cardWidth * percent / 100),
-                                y + coverHeight + 35, paint);
-                    }
-                }
+                int contentTop = collectionMode && activeCollection != null ? 214 : 184;
+                if (collectionMode && activeCollection != null) drawCollectionAddButton(canvas, width);
+                drawBookShelf(canvas, books, 24, contentTop, width);
             }
+            canvas.restore();
 
             if (brightnessPanel) drawBrightnessPanel(canvas, width);
             if (sortPanel) drawSortPanel(canvas, width);
             if (settingsPanel) drawSettingsPanel(canvas, width);
             if (collectionActionPanel) drawCollectionActionPanel(canvas, width);
             if (collectionEditor) drawCollectionEditorPanel(canvas, width);
+            if (collectionPickerPanel) drawCollectionPickerPanel(canvas, width);
             canvas.restore();
+        }
+
+        private void drawBookShelf(Canvas canvas, ArrayList<String> books, int left, int top, int width) {
+            if (books.isEmpty()) {
+                drawText(canvas, t("empty_library"), left, top + 52, 18,
+                        Color.rgb(113, 101, 80), false);
+                drawText(canvas, "+  " + t("open_pdf"), left, top + 94, 17,
+                        Color.rgb(74, 63, 43), true);
+                return;
+            }
+            int gap = 16;
+            int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+            int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
+            drawText(canvas, t("recent_books"), left, top - 12, 18,
+                    Color.rgb(58, 52, 43), true);
+            ArrayList<String> recentBooks = recentBooks();
+            int recentCount = Math.min(6, recentBooks.size());
+            for (int i = 0; i < recentCount; i++) {
+                int x = left + (i % 3) * (cardWidth + gap);
+                int y = top + (i / 3) * (coverHeight + 60);
+                drawBookCard(canvas, recentBooks.get(i), x, y, cardWidth, coverHeight);
+            }
+            int listTop = top + 2 * (coverHeight + 60) + 26;
+            drawText(canvas, t("all_books"), left, listTop, 18,
+                    Color.rgb(58, 52, 43), true);
+            paint.setColor(Color.rgb(178, 176, 168));
+            canvas.drawRect(left, listTop + 14, width - 24, listTop + 15, paint);
+            for (int i = 0; i < books.size(); i++) {
+                drawBookRow(canvas, books.get(i), left, listTop + 28 + i * 66, width - 24);
+            }
+        }
+
+        private void drawBookCard(Canvas canvas, String book, int x, int y, int width, int height) {
+            Bitmap thumbnail = loadThumbnail(book);
+            if (thumbnail != null) {
+                paint.setColorFilter(isColorMode() ? null : eInkFilter());
+                canvas.drawBitmap(thumbnail, null, new RectF(x, y, x + width, y + height), paint);
+                paint.setColorFilter(null);
+            } else {
+                paint.setColor(Color.rgb(188, 185, 175));
+                canvas.drawRect(x, y, x + width, y + height, paint);
+            }
+            drawText(canvas, "FOLIO", x + 9, y + 24, 12, Color.rgb(245, 244, 239), true);
+            String title = displayName(Uri.parse(book)).replace("▸  ", "");
+            if (title.length() > 18) title = title.substring(0, 16) + "…";
+            drawText(canvas, title, x + 9, y + height - 18, 14, Color.rgb(245, 244, 239), true);
+            drawProgress(canvas, book, x, y + height + 22, width);
+        }
+
+        private void drawBookRow(Canvas canvas, String book, int x, int y, int right) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f);
+            paint.setColor(Color.rgb(93, 88, 78));
+            canvas.drawRoundRect(new RectF(x, y + 6, x + 38, y + 46), 4, 4, paint);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawRect(x + 8, y + 15, x + 30, y + 17, paint);
+            canvas.drawRect(x + 8, y + 23, x + 30, y + 25, paint);
+            canvas.drawRect(x + 8, y + 31, x + 25, y + 33, paint);
+            String title = displayName(Uri.parse(book)).replace("▸  ", "");
+            if (title.length() > 28) title = title.substring(0, 26) + "…";
+            drawText(canvas, title, x + 54, y + 23, 16, Color.rgb(58, 55, 49), true);
+            drawProgress(canvas, book, x + 54, y + 42, right - x - 54);
+        }
+
+        private void drawProgress(Canvas canvas, String book, int x, int y, int width) {
+            int total = preferences.getInt("count_" + book.hashCode(), 0);
+            int page = preferences.getInt(PAGE_PREFIX + book.hashCode(), 0);
+            int percent = total > 0 ? (page >= total - 1 ? 100 : ((page + 1) * 100) / total) : 0;
+            drawText(canvas, total > 0 ? "%" + percent + " " + t("read") : t("new_book"),
+                    x, y, 13, Color.rgb(85, 80, 70), false);
+            paint.setColor(Color.rgb(145, 142, 133));
+            canvas.drawRect(x, y + 9, x + width, y + 12, paint);
+            if (total > 0) {
+                paint.setColor(Color.rgb(70, 68, 63));
+                canvas.drawRect(x, y + 9, x + width * percent / 100f, y + 12, paint);
+            }
         }
 
         private ArrayList<String> visibleBooks() {
@@ -1107,41 +1199,67 @@ public class MainActivity extends Activity {
             return books;
         }
 
+        private ArrayList<String> recentBooks() {
+            ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                    new HashSet<String>()));
+            Collections.sort(books, new Comparator<String>() {
+                @Override public int compare(String first, String second) {
+                    long firstOpened = preferences.getLong(OPENED_PREFIX + first.hashCode(), 0L);
+                    long secondOpened = preferences.getLong(OPENED_PREFIX + second.hashCode(), 0L);
+                    int recent = Long.compare(secondOpened, firstOpened);
+                    if (recent != 0) return recent;
+                    return displayName(Uri.parse(first)).compareToIgnoreCase(displayName(Uri.parse(second)));
+                }
+            });
+            if (searchBar != null && searchBar.getVisibility() == View.VISIBLE) {
+                String query = searchBar.getText().toString().trim().toLowerCase();
+                if (query.length() > 0) {
+                    ArrayList<String> filtered = new ArrayList<>();
+                    for (String book : books) {
+                        if (displayName(Uri.parse(book)).toLowerCase().contains(query)) filtered.add(book);
+                    }
+                    books = filtered;
+                }
+            }
+            if (collectionMode && activeCollection != null) {
+                ArrayList<String> filtered = new ArrayList<>();
+                for (String book : books) if (activeCollection.equals(collectionFor(book))) filtered.add(book);
+                books = filtered;
+            }
+            return books;
+        }
+
         private ArrayList<String> collectionNames() {
             Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
                     new HashSet<String>()));
-            for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
-                names.add(collectionFor(book));
-            }
             ArrayList<String> result = new ArrayList<>(names);
             Collections.sort(result);
             return result;
         }
 
         private String collectionFor(String bookUri) {
-            String value = preferences.getString(COLLECTION_PREFIX + bookUri.hashCode(), null);
-            return value == null ? t("general") : value;
+            return preferences.getString(COLLECTION_PREFIX + bookUri.hashCode(), null);
         }
 
         private void drawSortPanel(Canvas canvas, int width) {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRect(width - 270, 104, width - 22, 274, paint);
-            drawText(canvas, t("sort"), width - 246, 132, 16, Color.rgb(54, 53, 49), true);
+            canvas.drawRoundRect(new RectF(width - 300, 104, width - 22, 294), 10, 10, paint);
+            drawText(canvas, t("sort"), width - 272, 138, 19, Color.rgb(54, 53, 49), true);
             String[] labels = {t("sort_az"), t("sort_za"), t("sort_recent")};
             int selected = preferences.getInt(SORT_MODE, 2);
             for (int i = 0; i < labels.length; i++) {
-                float cy = 163 + i * 34;
+                float cy = 178 + i * 42;
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setStrokeWidth(2);
                 paint.setColor(Color.rgb(80, 78, 71));
-                canvas.drawCircle(width - 242, cy - 5, 8, paint);
+                canvas.drawCircle(width - 266, cy - 5, 9, paint);
                 if (selected == i) {
                     paint.setStyle(Paint.Style.FILL);
                     canvas.drawCircle(width - 242, cy - 5, 4, paint);
                 }
-                drawText(canvas, labels[i], width - 220, cy, 14, Color.rgb(61, 60, 55), false);
+                drawText(canvas, labels[i], width - 238, cy, 17, Color.rgb(61, 60, 55), false);
             }
             paint.setStyle(Paint.Style.FILL);
         }
@@ -1150,42 +1268,49 @@ public class MainActivity extends Activity {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRoundRect(new RectF(width - 270, 54, width - 22, 146), 7, 7, paint);
-            drawText(canvas, t("brightness"), width - 246, 82, 18,
+            canvas.drawRoundRect(new RectF(width - 300, 54, width - 22, 226), 10, 10, paint);
+            drawText(canvas, t("brightness"), width - 276, 86, 19,
                     Color.rgb(54, 53, 49), true);
             paint.setColor(Color.rgb(80, 78, 71));
             paint.setStrokeWidth(2);
-            canvas.drawLine(width - 246, 118, width - 46, 118, paint);
-            float knob = width - 246 + 200 * (100 - Math.min(100,
+            canvas.drawLine(width - 276, 124, width - 46, 124, paint);
+            float knob = width - 276 + 230 * (100 - Math.min(100,
                     preferences.getInt(DIM_LEVEL, 0))) / 100f;
             paint.setColor(Color.rgb(55, 53, 48));
-            canvas.drawCircle(knob, 118, 7, paint);
+            canvas.drawCircle(knob, 124, 8, paint);
+            drawText(canvas, t("blue_light"), width - 276, 164, 17,
+                    Color.rgb(54, 53, 49), true);
+            paint.setColor(Color.rgb(80, 78, 71));
+            canvas.drawLine(width - 276, 198, width - 46, 198, paint);
+            float blueKnob = width - 276 + 230 * preferences.getInt(BLUE_LIGHT_LEVEL, 0) / 100f;
+            paint.setColor(Color.rgb(121, 101, 58));
+            canvas.drawCircle(blueKnob, 198, 8, paint);
         }
 
         private void drawSettingsPanel(Canvas canvas, int width) {
             paint.setColor(Color.argb(45, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            int colorTop = languageExpanded ? 214 : 148;
-            int panelBottom = colorExpanded ? colorTop + 82 : colorTop + 36;
-            canvas.drawRoundRect(new RectF(width - 270, 54, width - 22, panelBottom), 7, 7, paint);
-            drawText(canvas, t("settings"), width - 246, 82, 19, Color.rgb(54, 53, 49), true);
-            drawText(canvas, t("language"), width - 246, 116, 16, Color.rgb(61, 60, 55), true);
+            int colorTop = languageExpanded ? 238 : 154;
+            int panelBottom = colorExpanded ? colorTop + 104 : colorTop + 48;
+            canvas.drawRoundRect(new RectF(width - 300, 54, width - 22, panelBottom), 10, 10, paint);
+            drawText(canvas, t("settings"), width - 272, 88, 21, Color.rgb(54, 53, 49), true);
+            drawText(canvas, t("language"), width - 272, 128, 18, Color.rgb(61, 60, 55), true);
             if (languageExpanded) {
-                drawText(canvas, "Türkçe", width - 220, 148, 16,
+                drawText(canvas, "Türkçe", width - 242, 166, 17,
                         "tr".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
                         "tr".equals(language));
-                drawText(canvas, "English", width - 220, 180, 16,
+                drawText(canvas, "English", width - 242, 204, 17,
                         "en".equals(language) ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
                         "en".equals(language));
-                colorTop = 214;
+                colorTop = 238;
             }
-            drawText(canvas, t("colors"), width - 246, colorTop, 16, Color.rgb(61, 60, 55), true);
+            drawText(canvas, t("colors"), width - 272, colorTop, 18, Color.rgb(61, 60, 55), true);
             if (colorExpanded) {
-                drawText(canvas, t("mono_color"), width - 220, colorTop + 32, 16,
+                drawText(canvas, t("mono_color"), width - 242, colorTop + 42, 17,
                         isColorMode() ? Color.rgb(130, 127, 119) : Color.rgb(45, 44, 40),
                         !isColorMode());
-                drawText(canvas, t("color_color"), width - 220, colorTop + 64, 16,
+                drawText(canvas, t("color_color"), width - 242, colorTop + 82, 17,
                         isColorMode() ? Color.rgb(45, 44, 40) : Color.rgb(130, 127, 119),
                         isColorMode());
             }
@@ -1209,7 +1334,7 @@ public class MainActivity extends Activity {
             for (int i = 0; i < folders.size(); i++) {
                 int x = left + (i % 2) * (folderWidth + 16);
                 int y = top + (i / 2) * 128;
-                paint.setColor(isColorMode() ? Color.rgb(218, 201, 165) : Color.rgb(214, 212, 204));
+                paint.setColor(collectionCardColor(folders.get(i)));
                 canvas.drawRoundRect(new RectF(x, y, x + folderWidth, y + 108), 7, 7, paint);
                 paint.setColor(isColorMode() ? Color.rgb(133, 106, 63) : Color.rgb(91, 89, 83));
                 canvas.drawRect(x + 14, y + 27, x + 35, y + 43, paint);
@@ -1231,22 +1356,95 @@ public class MainActivity extends Activity {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(1.5f);
             paint.setColor(Color.rgb(126, 123, 115));
-            canvas.drawRoundRect(new RectF(width - 196, 128, width - 28, 158), 4, 4, paint);
+            canvas.drawRoundRect(new RectF(width - 210, 176, width - 24, 216), 8, 8, paint);
             paint.setStyle(Paint.Style.FILL);
-            drawText(canvas, "+  " + t("new_collection"), width - 180, 148, 15,
+            drawText(canvas, "+  " + t("new_collection"), width - 194, 202, 15,
                     Color.rgb(66, 64, 58), true);
+        }
+
+        private void drawCollectionAddButton(Canvas canvas, int width) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.4f);
+            paint.setColor(Color.rgb(126, 123, 115));
+            canvas.drawRoundRect(new RectF(width - 210, 160, width - 24, 200), 8, 8, paint);
+            paint.setStyle(Paint.Style.FILL);
+            drawText(canvas, "+  " + t("add_from_library"), width - 194, 186, 15,
+                    Color.rgb(66, 64, 58), true);
+        }
+
+        private int collectionCardColor(String name) {
+            int selected = preferences.getInt(COLLECTION_COLOR_PREFIX + name.hashCode(), 0);
+            int[] color = isColorMode()
+                    ? new int[] {Color.rgb(218, 201, 165), Color.rgb(190, 207, 215),
+                    Color.rgb(211, 191, 193), Color.rgb(196, 207, 182), Color.rgb(207, 196, 220)}
+                    : new int[] {Color.rgb(214, 212, 204), Color.rgb(205, 211, 213),
+                    Color.rgb(214, 205, 206), Color.rgb(207, 213, 202), Color.rgb(210, 205, 215)};
+            return color[Math.max(0, Math.min(4, selected))];
+        }
+
+        private void drawCollectionPickerPanel(Canvas canvas, int width) {
+            int height = (int) (getHeight() / getResources().getDisplayMetrics().density);
+            paint.setColor(Color.argb(72, 40, 39, 35));
+            canvas.drawRect(0, 0, width, height, paint);
+            paint.setColor(Color.rgb(239, 237, 230));
+            canvas.drawRoundRect(new RectF(22, 72, width - 22, height - 28), 10, 10, paint);
+            drawText(canvas, t("add_from_library"), 46, 110, 21,
+                    Color.rgb(54, 53, 49), true);
+            drawText(canvas, collectionPickerTarget == null ? "" : collectionPickerTarget,
+                    46, 137, 14, Color.rgb(112, 109, 101), false);
+            ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                    new HashSet<String>()));
+            Collections.sort(books, new Comparator<String>() {
+                @Override public int compare(String a, String b) {
+                    return displayName(Uri.parse(a)).compareToIgnoreCase(displayName(Uri.parse(b)));
+                }
+            });
+            int rowTop = 154;
+            int maxRows = Math.max(1, (height - 230) / 58);
+            for (int i = 0; i < books.size() && i < maxRows; i++) {
+                String book = books.get(i);
+                int y = rowTop + i * 58;
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(1.5f);
+                paint.setColor(Color.rgb(90, 87, 80));
+                canvas.drawRoundRect(new RectF(46, y, 76, y + 30), 4, 4, paint);
+                if (selectedCollectionBooks.contains(book)) {
+                    paint.setStyle(Paint.Style.FILL);
+                    canvas.drawRect(51, y + 5, 71, y + 25, paint);
+                }
+                paint.setStyle(Paint.Style.FILL);
+                String title = displayName(Uri.parse(book)).replace("▸  ", "");
+                if (title.length() > 32) title = title.substring(0, 30) + "…";
+                drawText(canvas, title, 92, y + 21, 16, Color.rgb(58, 55, 49), true);
+            }
+            drawText(canvas, t("cancel"), width - 178, height - 56, 15,
+                    Color.rgb(112, 109, 101), true);
+            drawText(canvas, t("add"), width - 92, height - 56, 15,
+                    Color.rgb(61, 60, 55), true);
         }
 
         private void drawCollectionActionPanel(Canvas canvas, int width) {
             paint.setColor(Color.argb(55, 40, 39, 35));
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRoundRect(new RectF(width - 252, 150, width - 24, 286), 8, 8, paint);
+            canvas.drawRoundRect(new RectF(width - 282, 132, width - 24,
+                    collectionColorPanel ? 330 : 292), 10, 10, paint);
             drawText(canvas, pendingCollectionAction == null ? "" : pendingCollectionAction,
-                    width - 226, 180, 17, Color.rgb(54, 53, 49), true);
-            drawText(canvas, t("rename"), width - 226, 218, 15, Color.rgb(61, 60, 55), false);
-            drawText(canvas, t("delete"), width - 226, 252, 15, Color.rgb(100, 62, 55), false);
-            drawText(canvas, t("cancel"), width - 226, 278, 13, Color.rgb(112, 109, 101), false);
+                    width - 256, 164, 18, Color.rgb(54, 53, 49), true);
+            drawText(canvas, t("rename"), width - 256, 204, 17, Color.rgb(61, 60, 55), false);
+            drawText(canvas, t("folder_color"), width - 256, 242, 17, Color.rgb(61, 60, 55), false);
+            drawText(canvas, t("delete"), width - 256, collectionColorPanel ? 306 : 276,
+                    17, Color.rgb(100, 62, 55), false);
+            if (collectionColorPanel) {
+                int[] swatches = {Color.rgb(190, 207, 215), Color.rgb(218, 201, 165),
+                        Color.rgb(211, 191, 193), Color.rgb(196, 207, 182), Color.rgb(207, 196, 220)};
+                for (int i = 0; i < swatches.length; i++) {
+                    paint.setColor(swatches[i]);
+                    canvas.drawCircle(width - 242 + i * 38, 274, 12, paint);
+                }
+            }
+            drawText(canvas, t("cancel"), width - 256, collectionColorPanel ? 328 : 286,
+                    14, Color.rgb(112, 109, 101), false);
         }
 
         private void drawCollectionEditorPanel(Canvas canvas, int width) {
@@ -1352,16 +1550,37 @@ public class MainActivity extends Activity {
                 float x = event.getX() / density;
                 float y = event.getY() / density;
                 float width = getWidth() / density;
-                if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
+                if (x >= width - 300 && x <= width - 22 && y >= 92 && y <= 146) {
                     int value = Math.max(0, Math.min(100,
-                            Math.round(((width - 46) - x) / 200f * 100f)));
+                            Math.round(((width - 46) - x) / 230f * 100f)));
                     updateDim(value);
+                    invalidate();
+                } else if (x >= width - 300 && x <= width - 22 && y >= 166 && y <= 220) {
+                    int value = Math.max(0, Math.min(100,
+                            Math.round((x - (width - 276)) / 230f * 100f)));
+                    updateBlueLight(value);
                     invalidate();
                 }
                 return true;
             }
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                touchDownX = event.getX(); touchDownY = event.getY(); return true;
+                touchDownX = event.getX(); touchDownY = event.getY();
+                homeDragging = false;
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_MOVE && !collectionEditor
+                    && !collectionActionPanel && !collectionPickerPanel && !settingsPanel
+                    && !sortPanel && !brightnessPanel && event.getY() > 160) {
+                float density = getResources().getDisplayMetrics().density;
+                float delta = (event.getY() - touchDownY) / density;
+                if (Math.abs(delta) > 2) {
+                    homeContentOffset = Math.max(-homeMaxScroll(), Math.min(0,
+                            homeContentOffset + delta));
+                    touchDownY = event.getY();
+                    homeDragging = true;
+                    invalidate();
+                }
+                return true;
             }
             if (event.getAction() == MotionEvent.ACTION_UP) {
                 float density = getResources().getDisplayMetrics().density;
@@ -1375,59 +1594,120 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
+                if (collectionPickerPanel) {
+                    ArrayList<String> pickerBooks = new ArrayList<>(preferences.getStringSet(
+                            LIBRARY_URIS, new HashSet<String>()));
+                    Collections.sort(pickerBooks, new Comparator<String>() {
+                        @Override public int compare(String a, String b) {
+                            return displayName(Uri.parse(a)).compareToIgnoreCase(displayName(Uri.parse(b)));
+                        }
+                    });
+                    int maxRows = Math.max(1, (getHeight() - 230) / 58);
+                    if (y >= 154 && y < 154 + maxRows * 58 && x >= 34 && x <= width - 34) {
+                        int index = (int) ((y - 154) / 58);
+                        if (index >= 0 && index < pickerBooks.size()) {
+                            String book = pickerBooks.get(index);
+                            if (selectedCollectionBooks.contains(book)) selectedCollectionBooks.remove(book);
+                            else selectedCollectionBooks.add(book);
+                            invalidate();
+                        }
+                    } else if (y >= height - 92 && x >= width - 130) {
+                        for (String book : selectedCollectionBooks) saveCollection(Uri.parse(book), collectionPickerTarget);
+                        selectedCollectionBooks.clear();
+                        collectionPickerPanel = false;
+                        collectionPickerTarget = null;
+                        refreshPanelDimming();
+                        invalidate();
+                    } else if (y >= height - 92 && x >= width - 220) {
+                        selectedCollectionBooks.clear();
+                        collectionPickerPanel = false;
+                        collectionPickerTarget = null;
+                        refreshPanelDimming();
+                        invalidate();
+                    }
+                    return true;
+                }
                 if (collectionActionPanel) {
-                    if (x >= width - 252 && x <= width - 24 && y >= 194 && y < 232) {
+                    if (x >= width - 282 && x <= width - 24 && y >= 178 && y < 220) {
                         showCollectionEditor(pendingCollectionAction);
-                    } else if (x >= width - 252 && x <= width - 24 && y >= 232 && y < 266) {
+                    } else if (x >= width - 282 && x <= width - 24 && y >= 220 && y < 260) {
+                        collectionColorPanel = !collectionColorPanel;
+                        invalidate();
+                    } else if (collectionColorPanel && x >= width - 282 && x <= width - 30
+                            && y >= 258 && y < 292) {
+                        int color = Math.max(0, Math.min(4, (int) ((x - (width - 260)) / 38)));
+                        preferences.edit().putInt(COLLECTION_COLOR_PREFIX
+                                + pendingCollectionAction.hashCode(), color).apply();
+                        collectionColorPanel = false;
+                        collectionActionPanel = false;
+                        pendingCollectionAction = null;
+                        refreshPanelDimming();
+                        invalidate();
+                    } else if (x >= width - 282 && x <= width - 24
+                            && y >= (collectionColorPanel ? 286 : 260)
+                            && y < (collectionColorPanel ? 322 : 292)) {
                         deleteCollection(pendingCollectionAction);
                     } else {
                         collectionActionPanel = false;
+                        collectionColorPanel = false;
                         pendingCollectionAction = null;
+                        refreshPanelDimming();
                         invalidate();
                     }
                     return true;
                 }
                 if (brightnessPanel) {
-                    if (x >= width - 270 && x <= width - 22 && y >= 90 && y <= 145) {
+                    if (x >= width - 300 && x <= width - 22 && y >= 92 && y <= 146) {
                         int value = Math.max(0, Math.min(100,
-                                Math.round(((width - 46) - x) / 200f * 100f)));
+                                Math.round(((width - 46) - x) / 230f * 100f)));
                         updateDim(value);
                         invalidate();
                         return true;
                     }
+                    if (x >= width - 300 && x <= width - 22 && y >= 166 && y <= 220) {
+                        int value = Math.max(0, Math.min(100,
+                                Math.round((x - (width - 276)) / 230f * 100f)));
+                        updateBlueLight(value);
+                        invalidate();
+                        return true;
+                    }
                     brightnessPanel = false;
+                    refreshPanelDimming();
                     invalidate();
                     return true;
                 }
                 if (sortPanel) {
-                    if (x >= width - 270 && x <= width - 22 && y >= 140 && y <= 270) {
-                        int selected = Math.max(0, Math.min(2, (int) ((y - 140) / 34)));
+                    if (x >= width - 300 && x <= width - 22 && y >= 150 && y <= 294) {
+                        int selected = Math.max(0, Math.min(2, (int) ((y - 150) / 42)));
                         preferences.edit().putInt(SORT_MODE, selected).apply();
                     }
                     sortPanel = false;
+                    refreshPanelDimming();
                     invalidate();
                     return true;
                 }
                 if (settingsPanel) {
-                    if (x >= width - 270 && x <= width - 22 && y >= 92 && y <= 130) {
+                    if (x >= width - 300 && x <= width - 22 && y >= 98 && y <= 142) {
                         languageExpanded = !languageExpanded;
                         colorExpanded = false;
                         invalidate();
-                    } else if (languageExpanded && x >= width - 270 && x <= width - 22
-                            && y > 130 && y <= 198) {
-                        language = y <= 164 ? "tr" : "en";
+                    } else if (languageExpanded && x >= width - 300 && x <= width - 22
+                            && y > 142 && y <= 220) {
+                        language = y <= 184 ? "tr" : "en";
                         preferences.edit().putString(LANGUAGE, language).apply();
                         languageExpanded = false;
+                        settingsPanel = false;
+                        refreshPanelDimming();
                         recreate();
-                    } else if (x >= width - 270 && x <= width - 22
-                            && y >= (languageExpanded ? 198 : 130)
-                            && y <= (languageExpanded ? 232 : 170)) {
+                    } else if (x >= width - 300 && x <= width - 22
+                            && y >= (languageExpanded ? 220 : 142)
+                            && y <= (languageExpanded ? 266 : 190)) {
                         colorExpanded = !colorExpanded;
                         invalidate();
-                    } else if (colorExpanded && x >= width - 270 && x <= width - 22
-                            && y > (languageExpanded ? 232 : 170)
-                            && y <= (languageExpanded ? 300 : 238)) {
-                        boolean color = y > (languageExpanded ? 266 : 202);
+                    } else if (colorExpanded && x >= width - 300 && x <= width - 22
+                            && y > (languageExpanded ? 266 : 190)
+                            && y <= (languageExpanded ? 348 : 272)) {
+                        boolean color = y > (languageExpanded ? 306 : 230);
                         preferences.edit().putString(COLOR_MODE, color ? "color" : "mono").apply();
                         if (pdfPreview != null) pdfPreview.setColorFilter(color ? null : eInkFilter());
                         colorExpanded = false;
@@ -1436,6 +1716,7 @@ public class MainActivity extends Activity {
                         settingsPanel = false;
                         languageExpanded = false;
                         colorExpanded = false;
+                        refreshPanelDimming();
                         invalidate();
                     }
                     return true;
@@ -1446,6 +1727,7 @@ public class MainActivity extends Activity {
                     sortPanel = false;
                     brightnessBar.setVisibility(View.GONE);
                     searchBar.clearFocus();
+                    refreshPanelDimming();
                     invalidate();
                     return true;
                 }
@@ -1453,6 +1735,7 @@ public class MainActivity extends Activity {
                     settingsPanel = false;
                     sortPanel = false;
                     brightnessPanel = false;
+                    refreshPanelDimming();
                     pickPdf(); return true;
                 }
                 if (y < 55 && x >= width - 82) {
@@ -1462,45 +1745,63 @@ public class MainActivity extends Activity {
                     languageExpanded = false;
                     colorExpanded = false;
                     searchBar.clearFocus();
+                    refreshPanelDimming();
                     invalidate(); return true;
                 }
-                if (y >= 55 && y <= 105 && x > width - 185) {
+                if (y >= 105 && y <= 150 && x > width - 205) {
                     sortPanel = !sortPanel;
                     settingsPanel = false;
                     brightnessPanel = false;
+                    refreshPanelDimming();
                     invalidate();
                     return true;
                 }
-                if (y >= 55 && y <= 110 && x > 105 && x < 270) {
+                if (y >= 105 && y <= 150 && x > 110 && x < 285) {
                     collectionMode = true;
                     activeCollection = null;
+                    homeContentOffset = 0;
                     invalidate(); return true;
                 }
-                if (y >= 55 && y <= 110 && x <= 105) {
+                if (y >= 105 && y <= 150 && x <= 110) {
                     collectionMode = false;
                     activeCollection = null;
+                    homeContentOffset = 0;
                     invalidate(); return true;
                 }
-                if (collectionMode && activeCollection != null && y > 112 && y < 158 && x < 260) {
+                if (collectionMode && activeCollection != null && y > 166 && y < 214 && x < 290) {
                     activeCollection = null;
+                    homeContentOffset = 0;
                     invalidate();
                     return true;
                 }
-                if (collectionMode && activeCollection == null && y >= 120 && y <= 164
+                if (collectionMode && activeCollection == null && y >= 166 && y <= 214
                         && x >= width - 205) {
                     showNewCollectionDialog();
                     return true;
                 }
-                if (y > 165 && y < 620 && collectionMode && activeCollection == null) {
+                if (homeDragging) return true;
+                float contentY = y - homeContentOffset;
+                if (collectionMode && activeCollection != null && contentY >= 160
+                        && contentY <= 206 && x >= width - 220) {
+                    collectionPickerTarget = activeCollection;
+                    selectedCollectionBooks.clear();
+                    collectionPickerPanel = true;
+                    refreshPanelDimming();
+                    invalidate();
+                    return true;
+                }
+                if (contentY > 170 && contentY < 700 && collectionMode && activeCollection == null) {
                     ArrayList<String> folders = collectionNames();
                     int folderWidth = (int) ((width - 56 - 16) / 2);
-                    int index = Math.max(0, (int) ((y - 174) / 128)) * 2
+                    int index = Math.max(0, (int) ((contentY - 232) / 128)) * 2
                             + Math.max(0, Math.min(1, (int) ((x - 28) / (folderWidth + 16))));
                     if (index < folders.size()) {
                         int folderX = 28 + (index % 2) * (folderWidth + 16);
                         if (x >= folderX + folderWidth - 62) {
                             pendingCollectionAction = folders.get(index);
                             collectionActionPanel = true;
+                            collectionColorPanel = false;
+                            refreshPanelDimming();
                         } else {
                             activeCollection = folders.get(index);
                         }
@@ -1508,19 +1809,50 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
-                if (y > 120 && y < 620) {
-                    int cardWidth = Math.max(92, (int) ((width - 56 - 16 * 2) / 3));
-                    int column = Math.max(0, Math.min(2, (int) ((x - 28) / (cardWidth + 16))));
-                    int bookTop = collectionMode && activeCollection != null ? 172 : 140;
-                    int row = Math.max(0, (int) ((y - bookTop) / (148 + 74)));
-                    int index = row * 3 + column;
+                if (contentY > 170 && contentY < height) {
                     ArrayList<String> books = visibleBooks();
-                    if (index >= 0 && index < books.size()) tryOpenPdf(Uri.parse(books.get(index)));
+                    ArrayList<String> recentBooks = recentBooks();
+                    int gap = 16;
+                    int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+                    int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
+                    int bookTop = collectionMode && activeCollection != null ? 214 : 184;
+                    int recentCount = Math.min(6, books.size());
+                    int index = -1;
+                    if (contentY >= bookTop && contentY < bookTop + 2 * (coverHeight + 60)) {
+                        int column = Math.max(0, Math.min(2, (int) ((x - 24) / (cardWidth + gap))));
+                        int row = Math.max(0, (int) ((contentY - bookTop) / (coverHeight + 60)));
+                        index = row * 3 + column;
+                        if (index >= recentCount) index = -1;
+                    } else {
+                        int listTop = bookTop + 2 * (coverHeight + 60) + 26;
+                        if (contentY >= listTop + 20) index = (int) ((contentY - listTop - 28) / 66);
+                    }
+                    if (index >= 0 && index < recentBooks.size()
+                            && contentY < bookTop + 2 * (coverHeight + 60)) {
+                        tryOpenPdf(Uri.parse(recentBooks.get(index)));
+                    } else if (index >= 0 && index < books.size()) {
+                        tryOpenPdf(Uri.parse(books.get(index)));
+                    }
                     else if (books.isEmpty()) pickPdf();
                     return true;
                 }
             }
             return true;
+        }
+
+        private float homeMaxScroll() {
+            int width = (int) (getWidth() / getResources().getDisplayMetrics().density);
+            int height = (int) (getHeight() / getResources().getDisplayMetrics().density);
+            if (collectionMode && activeCollection == null) {
+                return Math.max(0, (collectionNames().size() / 2 + 1) * 128 + 260 - height);
+            }
+            int count = visibleBooks().size();
+            int gap = 16;
+            int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+            int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
+            int top = collectionMode && activeCollection != null ? 214 : 184;
+            int contentHeight = top + 2 * (coverHeight + 60) + 40 + count * 66;
+            return Math.max(0, contentHeight - height + 36);
         }
     }
 
@@ -1618,6 +1950,8 @@ public class MainActivity extends Activity {
         if ("quiet_page".equals(key)) return english ? "A quiet page" : "Sessiz bir sayfa";
         if ("adjust_light".equals(key)) return english ? "Adjust the light before you read." : "Okumadan önce ışığı ayarla.";
         if ("books".equals(key)) return english ? "Books" : "Kitaplar";
+        if ("recent_books".equals(key)) return english ? "Recently opened" : "Son açılanlar";
+        if ("all_books".equals(key)) return english ? "All books" : "Tüm kitaplar";
         if ("collections".equals(key)) return english ? "Collections" : "Koleksiyonlar";
         if ("authors".equals(key)) return english ? "Authors" : "Yazarlar";
         if ("filter_all".equals(key)) return english ? "Filter: All" : "Filtrele: Tümü";
@@ -1634,6 +1968,9 @@ public class MainActivity extends Activity {
         if ("new_collection_message".equals(key)) return english ? "Name this collection." : "Bu koleksiyona bir ad ver.";
         if ("rename".equals(key)) return english ? "Rename" : "Düzenle";
         if ("delete".equals(key)) return english ? "Delete" : "Sil";
+        if ("folder_color".equals(key)) return english ? "Folder color" : "Klasör rengi";
+        if ("add_from_library".equals(key)) return english ? "Add from library" : "Kitaplıktan ekle";
+        if ("add".equals(key)) return english ? "Add" : "Ekle";
         if ("cancel".equals(key)) return english ? "Cancel" : "İptal";
         if ("extra_dim".equals(key)) return english ? "Extra dim" : "Ekstra karartma";
         if ("open_pdf".equals(key)) return english ? "Add PDF" : "PDF ekle";
@@ -1645,7 +1982,7 @@ public class MainActivity extends Activity {
         if ("read".equals(key)) return english ? "read" : "okundu";
         if ("new_book".equals(key)) return english ? "New" : "Yeni";
         if ("general".equals(key)) return english ? "General" : "Genel";
-        if ("empty_collections".equals(key)) return english ? "Create a collection when adding a PDF." : "PDF eklerken bir koleksiyon oluştur.";
+        if ("empty_collections".equals(key)) return english ? "No collections yet. Create one above." : "Henüz koleksiyon yok. Yukarıdan oluştur.";
         if ("books_count".equals(key)) return english ? "books" : "kitap";
         if ("choose_collection".equals(key)) return english ? "Add to a collection" : "Koleksiyona ekle";
         if ("collection_message".equals(key)) return english ? "Name a folder for this PDF." : "Bu PDF için bir klasör adı yaz.";
@@ -1653,6 +1990,7 @@ public class MainActivity extends Activity {
         if ("save".equals(key)) return english ? "Save" : "Kaydet";
         if ("skip".equals(key)) return english ? "Skip" : "Atla";
         if ("brightness".equals(key)) return english ? "Brightness" : "Parlaklık";
+        if ("blue_light".equals(key)) return english ? "Blue light filter" : "Mavi ışık filtresi";
         if ("brightness_hint".equals(key)) return english ? "Adjust extra dim for comfortable reading." : "Rahat okuma için karartma seviyesini ayarla.";
         if ("done".equals(key)) return english ? "Done" : "Tamam";
         if ("language".equals(key)) return english ? "Language" : "Dil";
