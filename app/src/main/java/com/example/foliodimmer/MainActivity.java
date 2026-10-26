@@ -83,6 +83,7 @@ public class MainActivity extends Activity {
     private EditText searchBar;
     private SeekBar brightnessBar;
     private boolean collectionMode;
+    private boolean allBooksMode;
     private String activeCollection;
     private boolean settingsPanel;
     private boolean sortPanel;
@@ -1047,9 +1048,11 @@ public class MainActivity extends Activity {
             drawIconButton(canvas, width - 116, 8, "+");
             drawIconButton(canvas, width - 66, 8, "⚙");
 
-            drawText(canvas, t("books"), 24, 129, 19, Color.rgb(56, 49, 37), !collectionMode);
+            drawText(canvas, t("books"), 24, 129, 19, Color.rgb(56, 49, 37), !collectionMode && !allBooksMode);
             drawText(canvas, t("collections"), 142, 129, 19,
                     collectionMode ? Color.rgb(56, 49, 37) : Color.rgb(108, 98, 80), collectionMode);
+            drawText(canvas, t("all_books"), 286, 129, 19,
+                    allBooksMode ? Color.rgb(56, 49, 37) : Color.rgb(108, 98, 80), allBooksMode);
             int sortMode = preferences.getInt(SORT_MODE, 2);
             String sortLabel = sortMode == 0 ? t("sort_az")
                     : sortMode == 1 ? t("sort_za") : t("sort_recent");
@@ -1059,6 +1062,7 @@ public class MainActivity extends Activity {
                     Color.rgb(84, 76, 61), false);
             paint.setColor(Color.rgb(70, 63, 50));
             if (collectionMode) canvas.drawRect(142, 145, 270, 148, paint);
+            else if (allBooksMode) canvas.drawRect(286, 145, 390, 148, paint);
             else canvas.drawRect(24, 145, 104, 148, paint);
             paint.setColor(Color.rgb(178, 176, 168));
             canvas.drawRect(22, 164, width - 22, 165, paint);
@@ -1073,6 +1077,8 @@ public class MainActivity extends Activity {
             if (collectionMode && activeCollection == null) {
                 drawNewCollectionButton(canvas, width);
                 drawCollections(canvas, 24, 232, 0, 0, width);
+            } else if (allBooksMode) {
+                drawAllBooksGrid(canvas, books, 24, 184, width);
             } else {
                 int contentTop = collectionMode && activeCollection != null ? 214 : 184;
                 if (collectionMode && activeCollection != null) drawCollectionAddButton(canvas, width);
@@ -1109,13 +1115,26 @@ public class MainActivity extends Activity {
                 int y = top + (i / 3) * (coverHeight + 60);
                 drawBookCard(canvas, recentBooks.get(i), x, y, cardWidth, coverHeight);
             }
-            int listTop = top + 2 * (coverHeight + 60) + 26;
-            drawText(canvas, t("all_books"), left, listTop, 18,
+        }
+
+        private void drawAllBooksGrid(Canvas canvas, ArrayList<String> books, int left,
+                                      int top, int width) {
+            if (books.isEmpty()) {
+                drawText(canvas, t("empty_library"), left, top + 52, 18,
+                        Color.rgb(113, 101, 80), false);
+                drawText(canvas, "+  " + t("open_pdf"), left, top + 94, 17,
+                        Color.rgb(74, 63, 43), true);
+                return;
+            }
+            int gap = 16;
+            int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+            int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
+            drawText(canvas, t("all_books"), left, top - 12, 18,
                     Color.rgb(58, 52, 43), true);
-            paint.setColor(Color.rgb(178, 176, 168));
-            canvas.drawRect(left, listTop + 14, width - 24, listTop + 15, paint);
             for (int i = 0; i < books.size(); i++) {
-                drawBookRow(canvas, books.get(i), left, listTop + 28 + i * 66, width - 24);
+                int x = left + (i % 3) * (cardWidth + gap);
+                int y = top + (i / 3) * (coverHeight + 60);
+                drawBookCard(canvas, books.get(i), x, y, cardWidth, coverHeight);
             }
         }
 
@@ -1323,7 +1342,7 @@ public class MainActivity extends Activity {
             Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
                     new HashSet<String>()));
             Set<String> books = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
-            for (String book : books) names.add(collectionFor(book));
+            names.remove(null);
             if (names.isEmpty()) {
                 drawText(canvas, t("empty_collections"), left, top + 50, 17,
                         Color.rgb(113, 101, 80), false);
@@ -1761,12 +1780,21 @@ public class MainActivity extends Activity {
                 }
                 if (y >= 105 && y <= 150 && x > 110 && x < 285) {
                     collectionMode = true;
+                    allBooksMode = false;
+                    activeCollection = null;
+                    homeContentOffset = 0;
+                    invalidate(); return true;
+                }
+                if (y >= 105 && y <= 150 && x >= 285 && x <= width - 210) {
+                    collectionMode = false;
+                    allBooksMode = true;
                     activeCollection = null;
                     homeContentOffset = 0;
                     invalidate(); return true;
                 }
                 if (y >= 105 && y <= 150 && x <= 110) {
                     collectionMode = false;
+                    allBooksMode = false;
                     activeCollection = null;
                     homeContentOffset = 0;
                     invalidate(); return true;
@@ -1819,16 +1847,21 @@ public class MainActivity extends Activity {
                     int cardWidth = Math.max(110, (int) ((width - 48 - gap * 2) / 3));
                     int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
                     int bookTop = collectionMode && activeCollection != null ? 214 : 184;
-                    int recentCount = Math.min(6, books.size());
+                    int recentCount = Math.min(6, recentBooks.size());
                     int index = -1;
-                    if (contentY >= bookTop && contentY < bookTop + 2 * (coverHeight + 60)) {
+                    if (contentY >= bookTop && allBooksMode) {
+                        int column = Math.max(0, Math.min(2, (int) ((x - 24) / (cardWidth + gap))));
+                        int row = Math.max(0, (int) ((contentY - bookTop) / (coverHeight + 60)));
+                        index = row * 3 + column;
+                        if (index >= books.size()) index = -1;
+                        if (index >= 0) tryOpenPdf(Uri.parse(books.get(index)));
+                        else if (books.isEmpty()) pickPdf();
+                        return true;
+                    } else if (contentY >= bookTop && contentY < bookTop + 2 * (coverHeight + 60)) {
                         int column = Math.max(0, Math.min(2, (int) ((x - 24) / (cardWidth + gap))));
                         int row = Math.max(0, (int) ((contentY - bookTop) / (coverHeight + 60)));
                         index = row * 3 + column;
                         if (index >= recentCount) index = -1;
-                    } else {
-                        int listTop = bookTop + 2 * (coverHeight + 60) + 26;
-                        if (contentY >= listTop + 20) index = (int) ((contentY - listTop - 28) / 66);
                     }
                     if (index >= 0 && index < recentBooks.size()
                             && contentY < bookTop + 2 * (coverHeight + 60)) {
@@ -1854,7 +1887,8 @@ public class MainActivity extends Activity {
             int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
             int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
             int top = collectionMode && activeCollection != null ? 214 : 184;
-            int contentHeight = top + 2 * (coverHeight + 60) + 40 + count * 66;
+            int rows = allBooksMode ? Math.max(1, (count + 2) / 3) : 2;
+            int contentHeight = top + rows * (coverHeight + 60) + 40;
             return Math.max(0, contentHeight - height + 36);
         }
     }
