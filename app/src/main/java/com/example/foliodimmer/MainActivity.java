@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PixelFormat;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.Matrix;
@@ -933,7 +934,7 @@ public class MainActivity extends Activity {
         @Override public void setColorFilter(android.graphics.ColorFilter filter) {
             iconPaint.setColorFilter(filter);
         }
-        @Override public int getOpacity() { return -3; }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
         @Override public int getIntrinsicWidth() { return 20; }
         @Override public int getIntrinsicHeight() { return 20; }
     }
@@ -1602,7 +1603,9 @@ public class MainActivity extends Activity {
                             return displayName(Uri.parse(a)).compareToIgnoreCase(displayName(Uri.parse(b)));
                         }
                     });
-                    int maxRows = Math.max(1, (getHeight() - 230) / 58);
+                    int pickerHeight = (int) (getHeight() /
+                            getResources().getDisplayMetrics().density);
+                    int maxRows = Math.max(1, (pickerHeight - 230) / 58);
                     if (y >= 154 && y < 154 + maxRows * 58 && x >= 34 && x <= width - 34) {
                         int index = (int) ((y - 154) / 58);
                         if (index >= 0 && index < pickerBooks.size()) {
@@ -1813,7 +1816,7 @@ public class MainActivity extends Activity {
                     ArrayList<String> books = visibleBooks();
                     ArrayList<String> recentBooks = recentBooks();
                     int gap = 16;
-                    int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+                    int cardWidth = Math.max(110, (int) ((width - 48 - gap * 2) / 3));
                     int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
                     int bookTop = collectionMode && activeCollection != null ? 214 : 184;
                     int recentCount = Math.min(6, books.size());
