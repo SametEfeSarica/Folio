@@ -1,4 +1,4 @@
-# Folio v0.15.1
+# Folio v0.15.2
 
 Minimal native Java Android prototype targeting Android 5.1.1 (API 22).
 
@@ -53,6 +53,8 @@ The eighth prototype provides:
 - Six recently opened cover cards plus a scrollable all-books list.
 - Deeper extra-dim range and an adjustable blue-light filter.
 - Collections start empty and support rename, delete, five folder colors, and library-only multi-select book assignment.
+- Fixed collection-screen crash caused by unassigned books.
+- Added a dedicated All books tab with a cover grid.
 - Larger spaced settings and sorting panels with a dimmed search field.
 - A persistent A-Z, Z-A, and recently opened sorting menu.
 - Recent-book ordering based on the last time each PDF was opened.
