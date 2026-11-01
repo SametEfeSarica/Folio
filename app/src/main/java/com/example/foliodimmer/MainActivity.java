@@ -233,7 +233,7 @@ public class MainActivity extends Activity {
         dimOverlay.setClickable(false);
         root.addView(dimOverlay, new FrameLayout.LayoutParams(-1, -1));
         blueLightOverlay = new View(this);
-        blueLightOverlay.setBackgroundColor(Color.rgb(255, 188, 72));
+        blueLightOverlay.setBackgroundColor(Color.rgb(255, 229, 199));
         blueLightOverlay.setClickable(false);
         root.addView(blueLightOverlay, new FrameLayout.LayoutParams(-1, -1));
         updateBlueLight(preferences.getInt(BLUE_LIGHT_LEVEL, 0));
@@ -561,6 +561,18 @@ public class MainActivity extends Activity {
         collectionPickerOffset = 0;
         collectionPickerDragging = false;
         collectionPickerPanel = true;
+        if (searchBar != null) searchBar.setVisibility(View.GONE);
+        refreshPanelDimming();
+        if (kindleHome != null) kindleHome.invalidate();
+    }
+
+    private void closeCollectionPicker() {
+        collectionPickerPanel = false;
+        collectionPickerTarget = null;
+        selectedCollectionBooks.clear();
+        collectionPickerOffset = 0;
+        collectionPickerDragging = false;
+        if (searchBar != null) searchBar.setVisibility(View.VISIBLE);
         refreshPanelDimming();
         if (kindleHome != null) kindleHome.invalidate();
     }
@@ -923,8 +935,8 @@ public class MainActivity extends Activity {
 
             toolbarPaint.setColor(Color.rgb(100, 98, 91));
             toolbarPaint.setStrokeWidth(1.5f);
-            float left = 84;
-            float right = width - 124;
+            float left = ReaderToolbarLayout.trackStart();
+            float right = ReaderToolbarLayout.trackEnd(width);
             canvas.drawLine(left, 58, right, 58, toolbarPaint);
             if (total > 1) {
                 float knob = left + (right - left) * currentPage / (float) (total - 1);
@@ -974,7 +986,8 @@ public class MainActivity extends Activity {
             float width = getWidth() / density;
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 downX = x;
-                dragging = y > 35 && y < 75 && x > 70 && x < width - 106;
+                dragging = y > 35 && y < 75 && x > 70
+                        && x < ReaderToolbarLayout.nextButtonLeft(width);
                 if (dragging) seekTo(x, width);
                 return true;
             }
@@ -996,7 +1009,7 @@ public class MainActivity extends Activity {
 
         private void seekTo(float x, float width) {
             if (renderer == null || renderer.getPageCount() < 2) return;
-            float ratio = Math.max(0, Math.min(1, (x - 84) / (width - 208)));
+            float ratio = ReaderToolbarLayout.progressAt(x, width);
             showPage(Math.round(ratio * (renderer.getPageCount() - 1)));
         }
     }
@@ -1086,7 +1099,7 @@ public class MainActivity extends Activity {
 
     private void updateBlueLight(int value) {
         int safe = Math.max(0, Math.min(100, value));
-        if (blueLightOverlay != null) blueLightOverlay.setAlpha(safe / 100f * 0.32f);
+        if (blueLightOverlay != null) blueLightOverlay.setAlpha(safe / 100f * 0.22f);
         if (preferences != null) preferences.edit().putInt(BLUE_LIGHT_LEVEL, safe).apply();
     }
 
@@ -1175,6 +1188,7 @@ public class MainActivity extends Activity {
             }
             canvas.restore();
 
+            if (collectionMode && activeCollection != null) drawCollectionAddButton(canvas, width);
             if (brightnessPanel) drawBrightnessPanel(canvas, width);
             if (sortPanel) drawSortPanel(canvas, width);
             if (settingsPanel) drawSettingsPanel(canvas, width);
@@ -1827,19 +1841,9 @@ public class MainActivity extends Activity {
                         for (String book : selectedCollectionBooks) {
                             saveCollection(Uri.parse(book), collectionPickerTarget);
                         }
-                        selectedCollectionBooks.clear();
-                        collectionPickerPanel = false;
-                        collectionPickerTarget = null;
-                        collectionPickerOffset = 0;
-                        refreshPanelDimming();
-                        invalidate();
+                        closeCollectionPicker();
                     } else if (y >= height - 92 && x >= width - 220) {
-                        selectedCollectionBooks.clear();
-                        collectionPickerPanel = false;
-                        collectionPickerTarget = null;
-                        collectionPickerOffset = 0;
-                        refreshPanelDimming();
-                        invalidate();
+                        closeCollectionPicker();
                     }
                     return true;
                 }
@@ -2018,8 +2022,8 @@ public class MainActivity extends Activity {
                 }
                 if (homeDragging) return true;
                 float contentY = y - homeContentOffset;
-                if (collectionMode && activeCollection != null && contentY >= 160
-                        && contentY <= 206 && x >= width - 220) {
+                if (collectionMode && activeCollection != null && y >= 160
+                        && y <= 206 && x >= width - 220) {
                     openCollectionPicker(activeCollection);
                     return true;
                 }
