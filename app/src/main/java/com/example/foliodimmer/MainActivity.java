@@ -44,6 +44,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Drawable;
 import java.util.Comparator;
@@ -98,6 +99,8 @@ public class MainActivity extends Activity {
     private String editingCollection;
     private String pendingCollectionAction;
     private String collectionPickerTarget;
+    private float collectionPickerOffset;
+    private boolean collectionPickerDragging;
     private final Set<String> selectedCollectionBooks = new HashSet<>();
     private float homeContentOffset;
     private boolean homeDragging;
@@ -119,6 +122,7 @@ public class MainActivity extends Activity {
     private static final String COLOR_MODE = "color_mode";
     private static final String BLUE_LIGHT_LEVEL = "blue_light_level";
     private static final String COLLECTION_COLOR_PREFIX = "collection_color_";
+    private static final String STATE_READER_URI = "state_reader_uri";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,13 +132,27 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         language = preferences.getString(LANGUAGE, "tr");
+        migratePreferenceKeys();
         migrateLegacyGeneralCollection();
         setContentView(createScreen());
         immersive = true;
         applyImmersiveMode();
         updateDim(preferences.getInt(DIM_LEVEL, 0));
         rebuildLibrary();
-        if (!preferences.getBoolean(SETUP_DONE, false)) showSetup();
+        if (savedInstanceState != null && savedInstanceState.containsKey(STATE_READER_URI)) {
+            String readerUri = savedInstanceState.getString(STATE_READER_URI);
+            if (readerUri != null) tryOpenPdf(Uri.parse(readerUri));
+        } else if (!preferences.getBoolean(SETUP_DONE, false)) {
+            showSetup();
+        }
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        if (pdfPreview != null && pdfPreview.getVisibility() == View.VISIBLE && currentUri != null) {
+            outState.putString(STATE_READER_URI, currentUri);
+        }
+        super.onSaveInstanceState(outState);
     }
 
     private View createScreen() {
@@ -160,6 +178,7 @@ public class MainActivity extends Activity {
         searchBar.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                homeContentOffset = 0;
                 if (kindleHome != null) kindleHome.invalidate();
             }
             @Override public void afterTextChanged(Editable editable) { }
@@ -458,12 +477,38 @@ public class MainActivity extends Activity {
         names.remove("General");
         SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
         for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
-            String value = preferences.getString(COLLECTION_PREFIX + book.hashCode(), null);
+            String value = preferences.getString(CollectionStorage.key(COLLECTION_PREFIX, book), null);
             if ("Genel".equals(value) || "General".equals(value)) {
-                editor.remove(COLLECTION_PREFIX + book.hashCode());
+                editor.remove(CollectionStorage.key(COLLECTION_PREFIX, book));
             }
         }
         editor.apply();
+    }
+
+    private void migratePreferenceKeys() {
+        Set<String> books = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
+        for (String book : books) {
+            migratePreferenceKey(COLLECTION_PREFIX, book);
+            migratePreferenceKey(PAGE_PREFIX, book);
+            migratePreferenceKey("count_", book);
+            migratePreferenceKey(OPENED_PREFIX, book);
+        }
+        Set<String> names = preferences.getStringSet(COLLECTIONS, new HashSet<String>());
+        for (String name : names) migratePreferenceKey(COLLECTION_COLOR_PREFIX, name);
+    }
+
+    private void migratePreferenceKey(String prefix, String value) {
+        String legacyKey = prefix + value.hashCode();
+        String stableKey = CollectionStorage.key(prefix, value);
+        if (!preferences.contains(legacyKey)) return;
+        SharedPreferences.Editor editor = preferences.edit();
+        if (!preferences.contains(stableKey)) {
+            Object legacyValue = preferences.getAll().get(legacyKey);
+            if (legacyValue instanceof String) editor.putString(stableKey, (String) legacyValue);
+            else if (legacyValue instanceof Integer) editor.putInt(stableKey, (Integer) legacyValue);
+            else if (legacyValue instanceof Long) editor.putLong(stableKey, (Long) legacyValue);
+        }
+        editor.remove(legacyKey).apply();
     }
 
     private void showCollectionDialog(final Uri uri) {
@@ -485,12 +530,20 @@ public class MainActivity extends Activity {
     }
 
     private void saveCollection(Uri uri, String name) {
+        String normalized = CollectionStorage.normalizeName(name);
+        if (normalized == null) return;
         Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
                 new HashSet<String>()));
-        names.add(name);
+        names.add(normalized);
         preferences.edit().putStringSet(COLLECTIONS, names)
-                .putString(COLLECTION_PREFIX + uri.toString().hashCode(), name).apply();
+                .putString(CollectionStorage.key(COLLECTION_PREFIX, uri.toString()), normalized).apply();
         if (kindleHome != null) kindleHome.invalidate();
+    }
+
+    private String collectionForBook(String bookUri) {
+        String collection = preferences.getString(CollectionStorage.key(COLLECTION_PREFIX, bookUri), null);
+        return collection != null ? collection
+                : preferences.getString(COLLECTION_PREFIX + bookUri.hashCode(), null);
     }
 
     private void showNewCollectionDialog() {
@@ -528,24 +581,33 @@ public class MainActivity extends Activity {
 
     private void finishCollectionEditor(boolean save) {
         if (save && collectionInput != null) {
-            String name = collectionInput.getText().toString().trim();
-            if (name.length() > 0) {
-                Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
-                        new HashSet<String>()));
-                if (editingCollection != null) names.remove(editingCollection);
-                names.add(name);
-                SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
-                if (editingCollection != null) {
-                    for (String book : preferences.getStringSet(LIBRARY_URIS,
-                            new HashSet<String>())) {
-                        if (editingCollection.equals(preferences.getString(
-                                COLLECTION_PREFIX + book.hashCode(), null))) {
-                            editor.putString(COLLECTION_PREFIX + book.hashCode(), name);
-                        }
+            String name = CollectionStorage.normalizeName(collectionInput.getText().toString());
+            if (name == null) {
+                collectionInput.setError(t("collection_name_required"));
+                return;
+            }
+            Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                    new HashSet<String>()));
+            if (CollectionStorage.isDuplicateName(names, name, editingCollection)) {
+                collectionInput.setError(t("collection_exists"));
+                return;
+            }
+            SharedPreferences.Editor editor = preferences.edit();
+            if (editingCollection != null) {
+                names.remove(editingCollection);
+                int color = preferences.getInt(CollectionStorage.key(
+                        COLLECTION_COLOR_PREFIX, editingCollection), 0);
+                editor.remove(CollectionStorage.key(COLLECTION_COLOR_PREFIX, editingCollection));
+                editor.putInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX, name), color);
+                for (String book : preferences.getStringSet(LIBRARY_URIS,
+                        new HashSet<String>())) {
+                    if (editingCollection.equals(collectionForBook(book))) {
+                        editor.putString(CollectionStorage.key(COLLECTION_PREFIX, book), name);
                     }
                 }
-                editor.apply();
             }
+            names.add(name);
+            editor.putStringSet(COLLECTIONS, names).apply();
         }
         if (collectionInput != null) {
             ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
@@ -565,17 +627,26 @@ public class MainActivity extends Activity {
         names.remove(name);
         SharedPreferences.Editor editor = preferences.edit().putStringSet(COLLECTIONS, names);
         for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
-            if (name.equals(preferences.getString(COLLECTION_PREFIX + book.hashCode(), null))) {
-                editor.remove(COLLECTION_PREFIX + book.hashCode());
+            if (name.equals(collectionForBook(book))) {
+                editor.remove(CollectionStorage.key(COLLECTION_PREFIX, book));
             }
         }
-        editor.remove(COLLECTION_COLOR_PREFIX + name.hashCode());
+        editor.remove(CollectionStorage.key(COLLECTION_COLOR_PREFIX, name));
         editor.apply();
         collectionActionPanel = false;
         collectionColorPanel = false;
         pendingCollectionAction = null;
         refreshPanelDimming();
         if (kindleHome != null) kindleHome.invalidate();
+    }
+
+    private void confirmDeleteCollection(String name) {
+        new AlertDialog.Builder(this)
+                .setTitle(t("delete_collection"))
+                .setMessage(t("delete_collection_message"))
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("delete"), (dialog, which) -> deleteCollection(name))
+                .show();
     }
 
     private void showLegacyCollectionDialog(final Uri uri) {
@@ -634,8 +705,8 @@ public class MainActivity extends Activity {
             TextView title = text(name.replace("▸  ", ""), 16, Color.rgb(50, 45, 41));
             title.setSingleLine(true);
             details.addView(title, wrap());
-            int total = preferences.getInt("count_" + bookUri.hashCode(), 0);
-            int page = preferences.getInt(PAGE_PREFIX + bookUri.hashCode(), 0);
+            int total = preferences.getInt(CollectionStorage.key("count_", bookUri), 0);
+            int page = preferences.getInt(CollectionStorage.key(PAGE_PREFIX, bookUri), 0);
             TextView progressText = text(total > 0 ? (page + 1) + " / " + total : t("pdf_document"),
                     12, Color.rgb(125, 118, 108));
             details.addView(progressText, wrap());
@@ -678,11 +749,11 @@ public class MainActivity extends Activity {
             renderer = new PdfRenderer(pdfFile);
             currentUri = uri.toString();
             preferences.edit()
-                    .putInt("count_" + currentUri.hashCode(), renderer.getPageCount())
-                    .putLong(OPENED_PREFIX + currentUri.hashCode(), System.currentTimeMillis())
+                    .putInt(CollectionStorage.key("count_", currentUri), renderer.getPageCount())
+                    .putLong(CollectionStorage.key(OPENED_PREFIX, currentUri), System.currentTimeMillis())
                     .apply();
             if (pageSeekBar != null) pageSeekBar.setMax(Math.max(1, renderer.getPageCount() - 1));
-            currentPage = preferences.getInt(PAGE_PREFIX + currentUri.hashCode(), 0);
+            currentPage = preferences.getInt(CollectionStorage.key(PAGE_PREFIX, currentUri), 0);
             currentPage = Math.max(0, Math.min(currentPage, renderer.getPageCount() - 1));
             libraryPage.setVisibility(View.GONE);
             searchBar.setVisibility(View.GONE);
@@ -704,7 +775,7 @@ public class MainActivity extends Activity {
         if (renderer == null || pageNumber < 0 || pageNumber >= renderer.getPageCount()) return;
         currentPage = pageNumber;
         if (currentUri != null) {
-            preferences.edit().putInt(PAGE_PREFIX + currentUri.hashCode(), currentPage).apply();
+            preferences.edit().putInt(CollectionStorage.key(PAGE_PREFIX, currentUri), currentPage).apply();
         }
         PdfRenderer.Page page = renderer.openPage(currentPage);
         Bitmap bitmap = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2,
@@ -987,7 +1058,7 @@ public class MainActivity extends Activity {
 
     private void updateDim(int value) {
         if (dimOverlay != null) {
-            dimOverlay.setAlpha(Math.min(0.78f, value / 100f * 0.78f));
+            dimOverlay.setAlpha(Math.min(0.88f, value / 100f * 0.88f));
         }
         if (amountLabel != null) {
             amountLabel.setText(value + "%");
@@ -999,7 +1070,7 @@ public class MainActivity extends Activity {
 
     private void updateBlueLight(int value) {
         int safe = Math.max(0, Math.min(100, value));
-        if (blueLightOverlay != null) blueLightOverlay.setAlpha(safe / 100f * 0.24f);
+        if (blueLightOverlay != null) blueLightOverlay.setAlpha(safe / 100f * 0.32f);
         if (preferences != null) preferences.edit().putInt(BLUE_LIGHT_LEVEL, safe).apply();
     }
 
@@ -1077,6 +1148,8 @@ public class MainActivity extends Activity {
             if (collectionMode && activeCollection == null) {
                 drawNewCollectionButton(canvas, width);
                 drawCollections(canvas, 24, 232, 0, 0, width);
+            } else if (collectionMode && activeCollection != null) {
+                drawCollectionBookList(canvas, books, 24, 230, width);
             } else if (allBooksMode) {
                 drawAllBooksGrid(canvas, books, 24, 184, width);
             } else {
@@ -1097,22 +1170,23 @@ public class MainActivity extends Activity {
 
         private void drawBookShelf(Canvas canvas, ArrayList<String> books, int left, int top, int width) {
             if (books.isEmpty()) {
-                drawText(canvas, t("empty_library"), left, top + 52, 18,
+                drawText(canvas, searchQuery().length() > 0 ? t("no_search_results") : t("empty_library"), left, top + 52, 18,
                         Color.rgb(113, 101, 80), false);
-                drawText(canvas, "+  " + t("open_pdf"), left, top + 94, 17,
+                if (searchQuery().length() == 0) drawText(canvas, "+  " + t("open_pdf"), left, top + 94, 17,
                         Color.rgb(74, 63, 43), true);
                 return;
             }
             int gap = 16;
-            int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+            int columns = bookColumnCount(width);
+            int cardWidth = Math.max(110, (width - 48 - gap * (columns - 1)) / columns);
             int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
             drawText(canvas, t("recent_books"), left, top - 12, 18,
                     Color.rgb(58, 52, 43), true);
             ArrayList<String> recentBooks = recentBooks();
             int recentCount = Math.min(6, recentBooks.size());
             for (int i = 0; i < recentCount; i++) {
-                int x = left + (i % 3) * (cardWidth + gap);
-                int y = top + (i / 3) * (coverHeight + 60);
+                int x = left + (i % columns) * (cardWidth + gap);
+                int y = top + (i / columns) * (coverHeight + 60);
                 drawBookCard(canvas, recentBooks.get(i), x, y, cardWidth, coverHeight);
             }
         }
@@ -1120,20 +1194,21 @@ public class MainActivity extends Activity {
         private void drawAllBooksGrid(Canvas canvas, ArrayList<String> books, int left,
                                       int top, int width) {
             if (books.isEmpty()) {
-                drawText(canvas, t("empty_library"), left, top + 52, 18,
+                drawText(canvas, searchQuery().length() > 0 ? t("no_search_results") : t("empty_library"), left, top + 52, 18,
                         Color.rgb(113, 101, 80), false);
-                drawText(canvas, "+  " + t("open_pdf"), left, top + 94, 17,
+                if (searchQuery().length() == 0) drawText(canvas, "+  " + t("open_pdf"), left, top + 94, 17,
                         Color.rgb(74, 63, 43), true);
                 return;
             }
             int gap = 16;
-            int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+            int columns = bookColumnCount(width);
+            int cardWidth = Math.max(110, (width - 48 - gap * (columns - 1)) / columns);
             int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
             drawText(canvas, t("all_books"), left, top - 12, 18,
                     Color.rgb(58, 52, 43), true);
             for (int i = 0; i < books.size(); i++) {
-                int x = left + (i % 3) * (cardWidth + gap);
-                int y = top + (i / 3) * (coverHeight + 60);
+                int x = left + (i % columns) * (cardWidth + gap);
+                int y = top + (i / columns) * (coverHeight + 60);
                 drawBookCard(canvas, books.get(i), x, y, cardWidth, coverHeight);
             }
         }
@@ -1170,9 +1245,33 @@ public class MainActivity extends Activity {
             drawProgress(canvas, book, x + 54, y + 42, right - x - 54);
         }
 
+        private void drawCollectionBookList(Canvas canvas, ArrayList<String> books,
+                                            int left, int top, int width) {
+            drawText(canvas, books.size() + " " + t("books_count"), left, top + 18, 14,
+                    Color.rgb(112, 109, 101), false);
+            if (books.isEmpty()) {
+                drawText(canvas, searchQuery().length() > 0 ? t("no_search_results")
+                        : t("empty_collection"), left, top + 66, 18,
+                        Color.rgb(113, 101, 80), false);
+                if (searchQuery().length() == 0) {
+                    drawText(canvas, "+  " + t("add_from_library"), left, top + 106, 16,
+                            Color.rgb(74, 63, 43), true);
+                }
+                return;
+            }
+            paint.setColor(Color.rgb(213, 210, 201));
+            canvas.drawRect(left, top + 32, width - 24, top + 33, paint);
+            for (int i = 0; i < books.size(); i++) {
+                int rowTop = top + 40 + i * 76;
+                drawBookRow(canvas, books.get(i), left, rowTop, width - 24);
+                paint.setColor(Color.rgb(213, 210, 201));
+                canvas.drawRect(left, rowTop + 70, width - 24, rowTop + 71, paint);
+            }
+        }
+
         private void drawProgress(Canvas canvas, String book, int x, int y, int width) {
-            int total = preferences.getInt("count_" + book.hashCode(), 0);
-            int page = preferences.getInt(PAGE_PREFIX + book.hashCode(), 0);
+            int total = preferences.getInt(CollectionStorage.key("count_", book), 0);
+            int page = preferences.getInt(CollectionStorage.key(PAGE_PREFIX, book), 0);
             int percent = total > 0 ? (page >= total - 1 ? 100 : ((page + 1) * 100) / total) : 0;
             drawText(canvas, total > 0 ? "%" + percent + " " + t("read") : t("new_book"),
                     x, y, 13, Color.rgb(85, 80, 70), false);
@@ -1191,8 +1290,8 @@ public class MainActivity extends Activity {
             Collections.sort(books, new Comparator<String>() {
                 @Override public int compare(String first, String second) {
                     if (mode == 2) {
-                        long firstOpened = preferences.getLong(OPENED_PREFIX + first.hashCode(), 0L);
-                        long secondOpened = preferences.getLong(OPENED_PREFIX + second.hashCode(), 0L);
+                        long firstOpened = preferences.getLong(CollectionStorage.key(OPENED_PREFIX, first), 0L);
+                        long secondOpened = preferences.getLong(CollectionStorage.key(OPENED_PREFIX, second), 0L);
                         int recent = Long.compare(secondOpened, firstOpened);
                         if (recent != 0) return recent;
                     }
@@ -1224,8 +1323,8 @@ public class MainActivity extends Activity {
                     new HashSet<String>()));
             Collections.sort(books, new Comparator<String>() {
                 @Override public int compare(String first, String second) {
-                    long firstOpened = preferences.getLong(OPENED_PREFIX + first.hashCode(), 0L);
-                    long secondOpened = preferences.getLong(OPENED_PREFIX + second.hashCode(), 0L);
+                    long firstOpened = preferences.getLong(CollectionStorage.key(OPENED_PREFIX, first), 0L);
+                    long secondOpened = preferences.getLong(CollectionStorage.key(OPENED_PREFIX, second), 0L);
                     int recent = Long.compare(secondOpened, firstOpened);
                     if (recent != 0) return recent;
                     return displayName(Uri.parse(first)).compareToIgnoreCase(displayName(Uri.parse(second)));
@@ -1253,12 +1352,29 @@ public class MainActivity extends Activity {
             Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
                     new HashSet<String>()));
             ArrayList<String> result = new ArrayList<>(names);
+            String query = collectionMode && activeCollection == null ? searchQuery() : "";
+            if (query.length() > 0) {
+                ArrayList<String> filtered = new ArrayList<>();
+                for (String name : result) {
+                    if (name.toLowerCase(Locale.getDefault()).contains(query)) filtered.add(name);
+                }
+                result = filtered;
+            }
             Collections.sort(result);
             return result;
         }
 
+        private String searchQuery() {
+            return searchBar == null ? "" : searchBar.getText().toString().trim()
+                    .toLowerCase(Locale.getDefault());
+        }
+
+        private int bookColumnCount(int width) {
+            return Math.max(1, Math.min(6, (width - 48 + 16) / (152 + 16)));
+        }
+
         private String collectionFor(String bookUri) {
-            return preferences.getString(COLLECTION_PREFIX + bookUri.hashCode(), null);
+            return MainActivity.this.collectionForBook(bookUri);
         }
 
         private void drawSortPanel(Canvas canvas, int width) {
@@ -1289,8 +1405,10 @@ public class MainActivity extends Activity {
             canvas.drawRect(0, 0, width, getHeight(), paint);
             paint.setColor(Color.rgb(239, 237, 230));
             canvas.drawRoundRect(new RectF(width - 300, 54, width - 22, 226), 10, 10, paint);
-            drawText(canvas, t("brightness"), width - 276, 86, 19,
+            drawText(canvas, t("extra_dim"), width - 276, 86, 19,
                     Color.rgb(54, 53, 49), true);
+            drawText(canvas, preferences.getInt(DIM_LEVEL, 0) + "%", width - 72, 86, 15,
+                    Color.rgb(112, 109, 101), true);
             paint.setColor(Color.rgb(80, 78, 71));
             paint.setStrokeWidth(2);
             canvas.drawLine(width - 276, 124, width - 46, 124, paint);
@@ -1300,6 +1418,8 @@ public class MainActivity extends Activity {
             canvas.drawCircle(knob, 124, 8, paint);
             drawText(canvas, t("blue_light"), width - 276, 164, 17,
                     Color.rgb(54, 53, 49), true);
+            drawText(canvas, preferences.getInt(BLUE_LIGHT_LEVEL, 0) + "%", width - 72, 164, 15,
+                    Color.rgb(112, 109, 101), true);
             paint.setColor(Color.rgb(80, 78, 71));
             canvas.drawLine(width - 276, 198, width - 46, 198, paint);
             float blueKnob = width - 276 + 230 * preferences.getInt(BLUE_LIGHT_LEVEL, 0) / 100f;
@@ -1339,21 +1459,20 @@ public class MainActivity extends Activity {
 
         private void drawCollections(Canvas canvas, int left, int top, int cardWidth,
                                      int coverHeight, int width) {
-            Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
-                    new HashSet<String>()));
+            ArrayList<String> folders = collectionNames();
             Set<String> books = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
-            names.remove(null);
-            if (names.isEmpty()) {
-                drawText(canvas, t("empty_collections"), left, top + 50, 17,
+            if (folders.isEmpty()) {
+                drawText(canvas, searchQuery().length() > 0 ? t("no_search_results")
+                        : t("empty_collections"), left, top + 50, 17,
                         Color.rgb(113, 101, 80), false);
                 return;
             }
-            ArrayList<String> folders = new ArrayList<>(names);
-            Collections.sort(folders);
-            int folderWidth = (width - 56 - 16) / 2;
+            int gap = 16;
+            int columns = Math.max(1, Math.min(3, (width - 56 + gap) / (220 + gap)));
+            int folderWidth = (width - 56 - gap * (columns - 1)) / columns;
             for (int i = 0; i < folders.size(); i++) {
-                int x = left + (i % 2) * (folderWidth + 16);
-                int y = top + (i / 2) * 128;
+                int x = left + (i % columns) * (folderWidth + gap);
+                int y = top + (i / columns) * 128;
                 paint.setColor(collectionCardColor(folders.get(i)));
                 canvas.drawRoundRect(new RectF(x, y, x + folderWidth, y + 108), 7, 7, paint);
                 paint.setColor(isColorMode() ? Color.rgb(133, 106, 63) : Color.rgb(91, 89, 83));
@@ -1393,7 +1512,7 @@ public class MainActivity extends Activity {
         }
 
         private int collectionCardColor(String name) {
-            int selected = preferences.getInt(COLLECTION_COLOR_PREFIX + name.hashCode(), 0);
+            int selected = preferences.getInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX, name), 0);
             int[] color = isColorMode()
                     ? new int[] {Color.rgb(218, 201, 165), Color.rgb(190, 207, 215),
                     Color.rgb(211, 191, 193), Color.rgb(196, 207, 182), Color.rgb(207, 196, 220)}
@@ -1420,8 +1539,14 @@ public class MainActivity extends Activity {
                 }
             });
             int rowTop = 154;
-            int maxRows = Math.max(1, (height - 230) / 58);
-            for (int i = 0; i < books.size() && i < maxRows; i++) {
+            int listBottom = height - 104;
+            int visibleHeight = Math.max(0, listBottom - rowTop);
+            int maxOffset = Math.max(0, books.size() * 58 - visibleHeight);
+            collectionPickerOffset = Math.max(-maxOffset, Math.min(0, collectionPickerOffset));
+            canvas.save();
+            canvas.clipRect(34, rowTop, width - 34, listBottom);
+            canvas.translate(0, collectionPickerOffset);
+            for (int i = 0; i < books.size(); i++) {
                 String book = books.get(i);
                 int y = rowTop + i * 58;
                 paint.setStyle(Paint.Style.STROKE);
@@ -1433,10 +1558,14 @@ public class MainActivity extends Activity {
                     canvas.drawRect(51, y + 5, 71, y + 25, paint);
                 }
                 paint.setStyle(Paint.Style.FILL);
-                String title = displayName(Uri.parse(book)).replace("▸  ", "");
+                String title = displayName(Uri.parse(book));
                 if (title.length() > 32) title = title.substring(0, 30) + "…";
-                drawText(canvas, title, 92, y + 21, 16, Color.rgb(58, 55, 49), true);
+                String currentCollection = collectionFor(book);
+                String suffix = currentCollection == null || currentCollection.equals(collectionPickerTarget)
+                        ? "" : " · " + t("in_collection") + " " + currentCollection;
+                drawText(canvas, title + suffix, 92, y + 21, 16, Color.rgb(58, 55, 49), true);
             }
+            canvas.restore();
             drawText(canvas, t("cancel"), width - 178, height - 56, 15,
                     Color.rgb(112, 109, 101), true);
             drawText(canvas, t("add"), width - 92, height - 56, 15,
@@ -1586,6 +1715,25 @@ public class MainActivity extends Activity {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 touchDownX = event.getX(); touchDownY = event.getY();
                 homeDragging = false;
+                collectionPickerDragging = false;
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_MOVE && collectionPickerPanel) {
+                float density = getResources().getDisplayMetrics().density;
+                float y = event.getY() / density;
+                float height = getHeight() / density;
+                float delta = (event.getY() - touchDownY) / density;
+                if (y >= 154 && y < height - 104 && Math.abs(delta) > 2) {
+                    ArrayList<String> books = new ArrayList<>(preferences.getStringSet(
+                            LIBRARY_URIS, new HashSet<String>()));
+                    int visibleHeight = Math.max(0, (int) height - 258);
+                    int maxOffset = Math.max(0, books.size() * 58 - visibleHeight);
+                    collectionPickerOffset = Math.max(-maxOffset,
+                            Math.min(0, collectionPickerOffset + delta));
+                    touchDownY = event.getY();
+                    collectionPickerDragging = true;
+                    invalidate();
+                }
                 return true;
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE && !collectionEditor
@@ -1615,6 +1763,10 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (collectionPickerPanel) {
+                    if (collectionPickerDragging) {
+                        collectionPickerDragging = false;
+                        return true;
+                    }
                     ArrayList<String> pickerBooks = new ArrayList<>(preferences.getStringSet(
                             LIBRARY_URIS, new HashSet<String>()));
                     Collections.sort(pickerBooks, new Comparator<String>() {
@@ -1622,11 +1774,9 @@ public class MainActivity extends Activity {
                             return displayName(Uri.parse(a)).compareToIgnoreCase(displayName(Uri.parse(b)));
                         }
                     });
-                    int pickerHeight = (int) (getHeight() /
-                            getResources().getDisplayMetrics().density);
-                    int maxRows = Math.max(1, (pickerHeight - 230) / 58);
-                    if (y >= 154 && y < 154 + maxRows * 58 && x >= 34 && x <= width - 34) {
-                        int index = (int) ((y - 154) / 58);
+                    int listBottom = (int) height - 104;
+                    if (y >= 154 && y < listBottom && x >= 34 && x <= width - 34) {
+                        int index = (int) ((y - collectionPickerOffset - 154) / 58);
                         if (index >= 0 && index < pickerBooks.size()) {
                             String book = pickerBooks.get(index);
                             if (selectedCollectionBooks.contains(book)) selectedCollectionBooks.remove(book);
@@ -1634,16 +1784,27 @@ public class MainActivity extends Activity {
                             invalidate();
                         }
                     } else if (y >= height - 92 && x >= width - 130) {
-                        for (String book : selectedCollectionBooks) saveCollection(Uri.parse(book), collectionPickerTarget);
+                        for (String book : pickerBooks) {
+                            if (collectionPickerTarget.equals(collectionFor(book))
+                                    && !selectedCollectionBooks.contains(book)) {
+                                preferences.edit().remove(CollectionStorage.key(
+                                        COLLECTION_PREFIX, book)).apply();
+                            }
+                        }
+                        for (String book : selectedCollectionBooks) {
+                            saveCollection(Uri.parse(book), collectionPickerTarget);
+                        }
                         selectedCollectionBooks.clear();
                         collectionPickerPanel = false;
                         collectionPickerTarget = null;
+                        collectionPickerOffset = 0;
                         refreshPanelDimming();
                         invalidate();
                     } else if (y >= height - 92 && x >= width - 220) {
                         selectedCollectionBooks.clear();
                         collectionPickerPanel = false;
                         collectionPickerTarget = null;
+                        collectionPickerOffset = 0;
                         refreshPanelDimming();
                         invalidate();
                     }
@@ -1658,8 +1819,8 @@ public class MainActivity extends Activity {
                     } else if (collectionColorPanel && x >= width - 282 && x <= width - 30
                             && y >= 258 && y < 292) {
                         int color = Math.max(0, Math.min(4, (int) ((x - (width - 260)) / 38)));
-                        preferences.edit().putInt(COLLECTION_COLOR_PREFIX
-                                + pendingCollectionAction.hashCode(), color).apply();
+                        preferences.edit().putInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX,
+                                pendingCollectionAction), color).apply();
                         collectionColorPanel = false;
                         collectionActionPanel = false;
                         pendingCollectionAction = null;
@@ -1668,7 +1829,7 @@ public class MainActivity extends Activity {
                     } else if (x >= width - 282 && x <= width - 24
                             && y >= (collectionColorPanel ? 286 : 260)
                             && y < (collectionColorPanel ? 322 : 292)) {
-                        deleteCollection(pendingCollectionAction);
+                        confirmDeleteCollection(pendingCollectionAction);
                     } else {
                         collectionActionPanel = false;
                         collectionColorPanel = false;
@@ -1816,27 +1977,55 @@ public class MainActivity extends Activity {
                         && contentY <= 206 && x >= width - 220) {
                     collectionPickerTarget = activeCollection;
                     selectedCollectionBooks.clear();
+                    for (String book : preferences.getStringSet(LIBRARY_URIS,
+                            new HashSet<String>())) {
+                        if (activeCollection.equals(collectionFor(book))) {
+                            selectedCollectionBooks.add(book);
+                        }
+                    }
+                    collectionPickerOffset = 0;
+                    collectionPickerDragging = false;
                     collectionPickerPanel = true;
                     refreshPanelDimming();
                     invalidate();
                     return true;
                 }
-                if (contentY > 170 && contentY < 700 && collectionMode && activeCollection == null) {
+                if (collectionMode && activeCollection == null) {
                     ArrayList<String> folders = collectionNames();
-                    int folderWidth = (int) ((width - 56 - 16) / 2);
-                    int index = Math.max(0, (int) ((contentY - 232) / 128)) * 2
-                            + Math.max(0, Math.min(1, (int) ((x - 28) / (folderWidth + 16))));
-                    if (index < folders.size()) {
-                        int folderX = 28 + (index % 2) * (folderWidth + 16);
-                        if (x >= folderX + folderWidth - 62) {
-                            pendingCollectionAction = folders.get(index);
-                            collectionActionPanel = true;
-                            collectionColorPanel = false;
-                            refreshPanelDimming();
-                        } else {
-                            activeCollection = folders.get(index);
+                    int gap = 16;
+                    int columns = Math.max(1, Math.min(3, (int) (width - 56 + gap) / (220 + gap)));
+                    int folderWidth = ((int) width - 56 - gap * (columns - 1)) / columns;
+                    if (contentY >= 232) {
+                        int row = (int) ((contentY - 232) / 128);
+                        int column = Math.max(0, Math.min(columns - 1,
+                                (int) ((x - 28) / (folderWidth + gap))));
+                        int index = row * columns + column;
+                        int folderX = 28 + column * (folderWidth + gap);
+                        int folderY = 232 + row * 128;
+                        if (index < folders.size() && x >= folderX && x <= folderX + folderWidth
+                                && contentY >= folderY && contentY <= folderY + 108) {
+                            if (x >= folderX + folderWidth - 62) {
+                                pendingCollectionAction = folders.get(index);
+                                collectionActionPanel = true;
+                                collectionColorPanel = false;
+                                refreshPanelDimming();
+                            } else {
+                                activeCollection = folders.get(index);
+                                homeContentOffset = 0;
+                            }
+                            invalidate();
                         }
-                        invalidate();
+                    }
+                    return true;
+                }
+                if (collectionMode && activeCollection != null) {
+                    if (contentY >= 270 && x >= 24 && x <= width - 24) {
+                        int row = (int) ((contentY - 270) / 76);
+                        int rowTop = 270 + row * 76;
+                        ArrayList<String> books = visibleBooks();
+                        if (contentY <= rowTop + 70 && row >= 0 && row < books.size()) {
+                            tryOpenPdf(Uri.parse(books.get(row)));
+                        }
                     }
                     return true;
                 }
@@ -1844,33 +2033,26 @@ public class MainActivity extends Activity {
                     ArrayList<String> books = visibleBooks();
                     ArrayList<String> recentBooks = recentBooks();
                     int gap = 16;
-                    int cardWidth = Math.max(110, (int) ((width - 48 - gap * 2) / 3));
+                    int columns = bookColumnCount((int) width);
+                    int cardWidth = Math.max(110, (int) ((width - 48 - gap * (columns - 1)) / columns));
                     int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
-                    int bookTop = collectionMode && activeCollection != null ? 214 : 184;
-                    int recentCount = Math.min(6, recentBooks.size());
-                    int index = -1;
-                    if (contentY >= bookTop && allBooksMode) {
-                        int column = Math.max(0, Math.min(2, (int) ((x - 24) / (cardWidth + gap))));
-                        int row = Math.max(0, (int) ((contentY - bookTop) / (coverHeight + 60)));
-                        index = row * 3 + column;
-                        if (index >= books.size()) index = -1;
-                        if (index >= 0) tryOpenPdf(Uri.parse(books.get(index)));
-                        else if (books.isEmpty()) pickPdf();
+                    int bookTop = 184;
+                    ArrayList<String> source = allBooksMode ? books : recentBooks;
+                    if (contentY >= bookTop && x >= 24 && x <= width - 24) {
+                        int column = (int) ((x - 24) / (cardWidth + gap));
+                        int row = (int) ((contentY - bookTop) / (coverHeight + 60));
+                        int cardLeft = 24 + column * (cardWidth + gap);
+                        int cardTop = bookTop + row * (coverHeight + 60);
+                        int index = row * columns + column;
+                        if (column < columns && x <= cardLeft + cardWidth
+                                && contentY >= cardTop && contentY <= cardTop + coverHeight + 44
+                                && index >= 0 && index < source.size()) {
+                            tryOpenPdf(Uri.parse(source.get(index)));
+                        } else if (books.isEmpty() && searchQuery().length() == 0) {
+                            pickPdf();
+                        }
                         return true;
-                    } else if (contentY >= bookTop && contentY < bookTop + 2 * (coverHeight + 60)) {
-                        int column = Math.max(0, Math.min(2, (int) ((x - 24) / (cardWidth + gap))));
-                        int row = Math.max(0, (int) ((contentY - bookTop) / (coverHeight + 60)));
-                        index = row * 3 + column;
-                        if (index >= recentCount) index = -1;
                     }
-                    if (index >= 0 && index < recentBooks.size()
-                            && contentY < bookTop + 2 * (coverHeight + 60)) {
-                        tryOpenPdf(Uri.parse(recentBooks.get(index)));
-                    } else if (index >= 0 && index < books.size()) {
-                        tryOpenPdf(Uri.parse(books.get(index)));
-                    }
-                    else if (books.isEmpty()) pickPdf();
-                    return true;
                 }
             }
             return true;
@@ -1880,15 +2062,21 @@ public class MainActivity extends Activity {
             int width = (int) (getWidth() / getResources().getDisplayMetrics().density);
             int height = (int) (getHeight() / getResources().getDisplayMetrics().density);
             if (collectionMode && activeCollection == null) {
-                return Math.max(0, (collectionNames().size() / 2 + 1) * 128 + 260 - height);
+                int columns = Math.max(1, Math.min(3, (width - 56 + 16) / (220 + 16)));
+                int rows = (collectionNames().size() + columns - 1) / columns;
+                return Math.max(0, 232 + rows * 128 + 40 - height + 36);
             }
             int count = visibleBooks().size();
             int gap = 16;
-            int cardWidth = Math.max(110, (width - 48 - gap * 2) / 3);
+            if (collectionMode && activeCollection != null) {
+                return Math.max(0, 270 + count * 76 + 40 - height + 36);
+            }
+            int columns = bookColumnCount(width);
+            int cardWidth = Math.max(110, (width - 48 - gap * (columns - 1)) / columns);
             int coverHeight = Math.max(170, (int) (cardWidth * 1.38f));
-            int top = collectionMode && activeCollection != null ? 214 : 184;
-            int rows = allBooksMode ? Math.max(1, (count + 2) / 3) : 2;
-            int contentHeight = top + rows * (coverHeight + 60) + 40;
+            int rows = allBooksMode ? Math.max(1, (count + columns - 1) / columns)
+                    : Math.max(1, (Math.min(6, count) + columns - 1) / columns);
+            int contentHeight = 184 + rows * (coverHeight + 60) + 40;
             return Math.max(0, contentHeight - height + 36);
         }
     }
@@ -1999,7 +2187,7 @@ public class MainActivity extends Activity {
         if ("sort_recent".equals(key)) return english ? "Recently opened" : "Son açılanlar";
         if ("settings".equals(key)) return english ? "Settings" : "Ayarlar";
         if ("colors".equals(key)) return english ? "Display colors" : "Renkler";
-        if ("mono_color".equals(key)) return english ? "Original" : "Orijinal";
+        if ("mono_color".equals(key)) return english ? "Grayscale" : "Gri tonlama";
         if ("color_color".equals(key)) return english ? "Color" : "Renkli";
         if ("new_collection".equals(key)) return english ? "New collection" : "Yeni koleksiyon";
         if ("new_collection_message".equals(key)) return english ? "Name this collection." : "Bu koleksiyona bir ad ver.";
@@ -2020,6 +2208,13 @@ public class MainActivity extends Activity {
         if ("new_book".equals(key)) return english ? "New" : "Yeni";
         if ("general".equals(key)) return english ? "General" : "Genel";
         if ("empty_collections".equals(key)) return english ? "No collections yet. Create one above." : "Henüz koleksiyon yok. Yukarıdan oluştur.";
+        if ("empty_collection".equals(key)) return english ? "This collection is empty. Add books from the button above." : "Bu koleksiyon boş. Yukarıdaki düğmeden kitap ekle.";
+        if ("no_search_results".equals(key)) return english ? "No matches. Try another title." : "Eşleşme yok. Başka bir başlık dene.";
+        if ("collection_name_required".equals(key)) return english ? "Enter a collection name." : "Bir koleksiyon adı yaz.";
+        if ("collection_exists".equals(key)) return english ? "A collection with this name already exists." : "Bu adda bir koleksiyon zaten var.";
+        if ("delete_collection".equals(key)) return english ? "Delete this collection?" : "Bu koleksiyon silinsin mi?";
+        if ("delete_collection_message".equals(key)) return english ? "Its books will stay in your library, but will be removed from this collection." : "Kitaplar kitaplığında kalır; yalnızca bu koleksiyondan çıkarılır.";
+        if ("in_collection".equals(key)) return english ? "In" : "Şu koleksiyonda:";
         if ("books_count".equals(key)) return english ? "books" : "kitap";
         if ("choose_collection".equals(key)) return english ? "Add to a collection" : "Koleksiyona ekle";
         if ("collection_message".equals(key)) return english ? "Name a folder for this PDF." : "Bu PDF için bir klasör adı yaz.";
@@ -2027,7 +2222,7 @@ public class MainActivity extends Activity {
         if ("save".equals(key)) return english ? "Save" : "Kaydet";
         if ("skip".equals(key)) return english ? "Skip" : "Atla";
         if ("brightness".equals(key)) return english ? "Brightness" : "Parlaklık";
-        if ("blue_light".equals(key)) return english ? "Blue light filter" : "Mavi ışık filtresi";
+        if ("blue_light".equals(key)) return english ? "Warm light" : "Sarı ışık";
         if ("brightness_hint".equals(key)) return english ? "Adjust extra dim for comfortable reading." : "Rahat okuma için karartma seviyesini ayarla.";
         if ("done".equals(key)) return english ? "Done" : "Tamam";
         if ("language".equals(key)) return english ? "Language" : "Dil";
