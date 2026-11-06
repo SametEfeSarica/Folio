@@ -1254,10 +1254,50 @@ public class MainActivity extends Activity {
     private void showModernCollectionActions(String name) {
         String[] options = {t("rename"), t("folder_color"), t("delete")};
         new AlertDialog.Builder(this).setTitle(name).setItems(options, (dialog, which) -> {
-            if (which == 0) showCollectionEditor(name);
+            if (which == 0) showModernCollectionEditor(name);
             else if (which == 1) showModernColorDialog(name);
             else confirmDeleteCollection(name);
         }).show();
+    }
+
+    private void showModernCollectionEditor(String existingName) {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(existingName == null ? "" : existingName);
+        input.setHint(t("collection_hint"));
+        input.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this).setTitle(existingName == null ? t("new_collection") : t("rename"))
+                .setView(input)
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("save"), (dialog, which) -> {
+                    String name = CollectionStorage.normalizeName(input.getText().toString());
+                    if (name == null) {
+                        Toast.makeText(this, t("collection_name_required"), Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    Set<String> names = new HashSet<>(preferences.getStringSet(COLLECTIONS,
+                            new HashSet<String>()));
+                    if (CollectionStorage.isDuplicateName(names, name, existingName)) {
+                        Toast.makeText(this, t("collection_exists"), Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    SharedPreferences.Editor editor = preferences.edit();
+                    if (existingName != null) {
+                        names.remove(existingName);
+                        int color = preferences.getInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX, existingName), 0);
+                        editor.remove(CollectionStorage.key(COLLECTION_COLOR_PREFIX, existingName));
+                        editor.putInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX, name), color);
+                        for (String book : preferences.getStringSet(LIBRARY_URIS, new HashSet<String>())) {
+                            if (existingName.equals(collectionForBook(book))) {
+                                editor.putString(CollectionStorage.key(COLLECTION_PREFIX, book), name);
+                            }
+                        }
+                        if (existingName.equals(activeCollection)) activeCollection = name;
+                    }
+                    names.add(name);
+                    editor.putStringSet(COLLECTIONS, names).apply();
+                    if (modernHome != null) modernHome.rebuild();
+                }).show();
     }
 
     private void showModernColorDialog(String name) {
@@ -1443,7 +1483,7 @@ public class MainActivity extends Activity {
                 return;
             }
             Button create = action("+  " + t("new_collection"));
-            create.setOnClickListener(v -> showNewCollectionDialog());
+            create.setOnClickListener(v -> showModernCollectionEditor(null));
             content.addView(create, new LinearLayout.LayoutParams(-1, dp(50)));
             ArrayList<String> names = collectionNamesForModern();
             if (names.isEmpty()) content.addView(label(t("empty_collections"), 17, false));
