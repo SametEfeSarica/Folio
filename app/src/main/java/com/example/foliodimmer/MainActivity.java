@@ -42,6 +42,7 @@ import java.util.Locale;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -179,7 +180,8 @@ public class MainActivity extends Activity {
 
         searchBar = new EditText(this);
         searchBar.setSingleLine(true);
-        searchBar.setTextSize(16);
+        searchBar.setTextSize(15);
+        searchBar.setTypeface(Typeface.create("sans", Typeface.NORMAL));
         searchBar.setHint(t("search_library"));
         searchBar.setPadding(dp(12), 0, dp(12), 0);
         searchBar.setVisibility(View.VISIBLE);
@@ -210,9 +212,9 @@ public class MainActivity extends Activity {
         searchBar.setTextColor(Color.rgb(58, 57, 53));
         searchBar.setHintTextColor(Color.rgb(117, 115, 108));
         GradientDrawable searchBackground = new GradientDrawable();
-        searchBackground.setColor(Color.rgb(232, 230, 222));
-        searchBackground.setStroke(dp(1), Color.rgb(178, 176, 168));
-        searchBackground.setCornerRadius(dp(4));
+        searchBackground.setColor(Color.rgb(244, 243, 237));
+        searchBackground.setStroke(dp(2), Color.rgb(75, 72, 65));
+        searchBackground.setCornerRadius(dp(2));
         searchBar.setBackground(searchBackground);
         FrameLayout.LayoutParams searchParams = new FrameLayout.LayoutParams(-1, dp(44));
         searchParams.leftMargin = dp(24);
@@ -1351,6 +1353,29 @@ public class MainActivity extends Activity {
         }).show();
     }
 
+    private Bitmap loadModernThumbnail(String bookUri) {
+        synchronized (thumbnailCache) {
+            if (thumbnailCache.containsKey(bookUri)) return thumbnailCache.get(bookUri);
+        }
+        try (ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(Uri.parse(bookUri), "r")) {
+            if (descriptor == null) return null;
+            PdfRenderer pdf = new PdfRenderer(descriptor);
+            PdfRenderer.Page page = pdf.openPage(0);
+            int width = 240;
+            int height = Math.max(300, (int) (width * ((float) page.getHeight() / page.getWidth())));
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            bitmap.eraseColor(Color.WHITE);
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+            page.close();
+            pdf.close();
+            synchronized (thumbnailCache) { thumbnailCache.put(bookUri, bitmap); }
+            return bitmap;
+        } catch (Exception error) {
+            synchronized (thumbnailCache) { thumbnailCache.put(bookUri, null); }
+            return null;
+        }
+    }
+
     private class ModernHomeView extends android.widget.ScrollView {
         private final LinearLayout content = new LinearLayout(MainActivity.this);
         private boolean rebuilding;
@@ -1383,7 +1408,24 @@ public class MainActivity extends Activity {
             b.setMinHeight(0);
             b.setMinimumHeight(0);
             b.setPadding(dp(10), 0, dp(10), 0);
+            GradientDrawable ink = new GradientDrawable();
+            ink.setColor(Color.rgb(232, 230, 222));
+            ink.setStroke(dp(1), Color.rgb(75, 72, 65));
+            ink.setCornerRadius(dp(3));
+            b.setBackground(ink);
+            b.setTextColor(Color.rgb(48, 46, 41));
+            b.setTextSize(14);
+            b.setElevation(0);
             return b;
+        }
+
+        private void selectedTab(Button button, boolean selected) {
+            GradientDrawable ink = new GradientDrawable();
+            ink.setColor(selected ? Color.rgb(68, 66, 60) : Color.rgb(232, 230, 222));
+            ink.setStroke(dp(1), Color.rgb(75, 72, 65));
+            ink.setCornerRadius(dp(2));
+            button.setBackground(ink);
+            button.setTextColor(selected ? Color.WHITE : Color.rgb(48, 46, 41));
         }
 
         void rebuild() {
@@ -1418,6 +1460,9 @@ public class MainActivity extends Activity {
             all.setOnClickListener(v -> { collectionMode = false; allBooksMode = true; activeCollection = null; rebuild(); });
             Button folders = action(t("collections"));
             folders.setOnClickListener(v -> { collectionMode = true; allBooksMode = false; activeCollection = null; rebuild(); });
+            selectedTab(recent, !collectionMode && !allBooksMode);
+            selectedTab(all, !collectionMode && allBooksMode);
+            selectedTab(folders, collectionMode);
             tabs.addView(recent, new LinearLayout.LayoutParams(0, dp(46), 1));
             tabs.addView(all, new LinearLayout.LayoutParams(0, dp(46), 1));
             tabs.addView(folders, new LinearLayout.LayoutParams(0, dp(46), 1));
@@ -1446,28 +1491,63 @@ public class MainActivity extends Activity {
                 content.addView(add, new LinearLayout.LayoutParams(-1, dp(54)));
                 return;
             }
-            for (String value : books) addBookCard(value);
+            GridLayout grid = bookGrid();
+            for (String value : books) grid.addView(createBookCard(value));
+            content.addView(grid);
         }
 
-        private void addBookCard(String value) {
+        private GridLayout bookGrid() {
+            GridLayout grid = new GridLayout(MainActivity.this);
+            int width = getResources().getDisplayMetrics().widthPixels;
+            int columns = width >= dp(700) ? 4 : width >= dp(480) ? 3 : 2;
+            grid.setColumnCount(columns);
+            grid.setUseDefaultMargins(false);
+            return grid;
+        }
+
+        private View createBookCard(String value) {
             LinearLayout card = new LinearLayout(MainActivity.this);
+            card.setOrientation(LinearLayout.VERTICAL);
             card.setGravity(Gravity.CENTER_VERTICAL);
-            card.setPadding(dp(14), dp(8), dp(6), dp(8));
+            card.setPadding(dp(6), dp(6), dp(6), dp(10));
             GradientDrawable background = new GradientDrawable();
-            background.setColor(Color.rgb(244, 242, 235));
-            background.setStroke(dp(1), Color.rgb(193, 189, 178));
-            background.setCornerRadius(dp(6));
+            background.setColor(Color.rgb(244, 243, 237));
+            background.setStroke(dp(1), Color.rgb(79, 76, 69));
+            background.setCornerRadius(dp(2));
             card.setBackground(background);
+            ImageView cover = new ImageView(MainActivity.this);
+            cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            cover.setBackgroundColor(Color.rgb(214, 212, 204));
+            LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(-1, dp(210));
+            card.addView(cover, coverParams);
+            pageExecutor.execute(() -> {
+                Bitmap bitmap = loadModernThumbnail(value);
+                mainHandler.post(() -> {
+                    if (bitmap != null && cover.getWindowToken() != null) cover.setImageBitmap(bitmap);
+                });
+            });
             TextView title = label(displayName(Uri.parse(value)).replace("▸  ", ""), 16, true);
             title.setSingleLine(true);
-            card.addView(title, new LinearLayout.LayoutParams(0, dp(56), 1));
+            title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            title.setGravity(Gravity.CENTER_HORIZONTAL);
             Button remove = action("×");
+            remove.setTextSize(18);
             remove.setOnClickListener(v -> confirmRemovePdf(Uri.parse(value)));
-            card.addView(remove, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            LinearLayout footer = new LinearLayout(MainActivity.this);
+            footer.setGravity(Gravity.CENTER_VERTICAL);
+            footer.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
+            footer.addView(remove, new LinearLayout.LayoutParams(dp(42), dp(42)));
+            card.addView(footer, new LinearLayout.LayoutParams(-1, dp(42)));
+            card.setOnLongClickListener(v -> { confirmRemovePdf(Uri.parse(value)); return true; });
             card.setOnClickListener(v -> tryOpenPdf(Uri.parse(value)));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(72));
-            params.bottomMargin = dp(8);
-            content.addView(card, params);
+            int width = getResources().getDisplayMetrics().widthPixels;
+            int columns = width >= dp(700) ? 4 : width >= dp(480) ? 3 : 2;
+            GridLayout.LayoutParams params = new GridLayout.LayoutParams(
+                    GridLayout.spec(GridLayout.UNDEFINED), GridLayout.spec(GridLayout.UNDEFINED));
+            params.width = Math.max(dp(120), (width - dp(48) - dp(16) * (columns - 1)) / columns);
+            params.setMargins(dp(4), dp(4), dp(4), dp(8));
+            card.setLayoutParams(params);
+            return card;
         }
 
         private void buildCollections() {
@@ -1479,7 +1559,9 @@ public class MainActivity extends Activity {
                 Button add = action("+  " + t("add_from_library"));
                 add.setOnClickListener(v -> showModernCollectionPicker(activeCollection));
                 content.addView(add, new LinearLayout.LayoutParams(-1, dp(50)));
-                for (String value : modernBookUris(true)) addBookCard(value);
+                GridLayout grid = bookGrid();
+                for (String value : modernBookUris(true)) grid.addView(createBookCard(value));
+                content.addView(grid);
                 return;
             }
             Button create = action("+  " + t("new_collection"));
