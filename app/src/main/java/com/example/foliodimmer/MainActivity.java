@@ -18,6 +18,9 @@ import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
@@ -48,6 +51,8 @@ import android.widget.Toast;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Drawable;
 import java.util.Comparator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private View dimOverlay;
@@ -105,7 +110,12 @@ public class MainActivity extends Activity {
     private float homeContentOffset;
     private boolean homeDragging;
     private View blueLightOverlay;
+    private View panelDimOverlay;
     private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
+    private final ExecutorService pageExecutor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private int pageRenderToken;
+    private int pendingDimValue;
 
     private static final int PICK_PDF = 40;
     private static final String PREFS = "folio_preferences";
@@ -183,6 +193,18 @@ public class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable editable) { }
         });
+        searchBar.setCompoundDrawablesWithIntrinsicBounds(new SearchDrawable(), null,
+                new ClearDrawable(), null);
+        searchBar.setOnTouchListener((view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP
+                    && event.getX() > searchBar.getWidth() - dp(48)) {
+                searchBar.setText("");
+                searchBar.clearFocus();
+                root.requestFocus();
+                return true;
+            }
+            return false;
+        });
         searchBar.setTextColor(Color.rgb(58, 57, 53));
         searchBar.setHintTextColor(Color.rgb(117, 115, 108));
         GradientDrawable searchBackground = new GradientDrawable();
@@ -196,16 +218,23 @@ public class MainActivity extends Activity {
         searchParams.topMargin = dp(52);
         root.addView(searchBar, searchParams);
 
+        panelDimOverlay = new View(this);
+        panelDimOverlay.setBackgroundColor(Color.BLACK);
+        panelDimOverlay.setAlpha(0.24f);
+        panelDimOverlay.setVisibility(View.GONE);
+        panelDimOverlay.setClickable(false);
+        root.addView(panelDimOverlay, new FrameLayout.LayoutParams(-1, -1));
+
         brightnessBar = new SeekBar(this);
         brightnessBar.setMax(100);
         brightnessBar.setProgress(preferences.getInt(DIM_LEVEL, 0));
         brightnessBar.setVisibility(View.GONE);
         brightnessBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                updateDim(value);
+                updateDim(value, false);
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
-            @Override public void onStopTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { updateDim(bar.getProgress()); }
         });
         FrameLayout.LayoutParams brightnessParams = new FrameLayout.LayoutParams(dp(210), dp(42));
         brightnessParams.leftMargin = dp(118);
@@ -342,10 +371,10 @@ public class MainActivity extends Activity {
         slider.setProgress(0);
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                updateDim(value);
+                updateDim(value, false);
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
-            @Override public void onStopTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { updateDim(bar.getProgress()); }
         });
         slider.setProgress(preferences == null ? 0 : preferences.getInt(DIM_LEVEL, 0));
         page.addView(slider, new LinearLayout.LayoutParams(-1, dp(48)));
@@ -468,6 +497,20 @@ public class MainActivity extends Activity {
         saved.add(uri.toString());
         preferences.edit().putStringSet(LIBRARY_URIS, saved).apply();
         rebuildLibrary();
+    }
+
+    private void removePdf(Uri uri) {
+        String value = uri.toString();
+        Set<String> saved = new HashSet<>(preferences.getStringSet(LIBRARY_URIS,
+                new HashSet<String>()));
+        if (!saved.remove(value)) return;
+        SharedPreferences.Editor editor = preferences.edit().putStringSet(LIBRARY_URIS, saved)
+                .remove(CollectionStorage.key(COLLECTION_PREFIX, value))
+                .remove(CollectionStorage.key(PAGE_PREFIX, value))
+                .remove(CollectionStorage.key("count_", value))
+                .remove(CollectionStorage.key(OPENED_PREFIX, value));
+        if (value.equals(preferences.getString(LAST_PDF, null))) editor.remove(LAST_PDF);
+        editor.apply();
     }
 
     private void migrateLegacyGeneralCollection() {
@@ -676,6 +719,15 @@ public class MainActivity extends Activity {
         if (libraryList == null || preferences == null) return;
         libraryList.removeAllViews();
         Set<String> saved = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
+        for (String value : new HashSet<>(saved)) {
+            try (ParcelFileDescriptor ignored = getContentResolver().openFileDescriptor(
+                    Uri.parse(value), "r")) {
+                if (ignored == null) removePdf(Uri.parse(value));
+            } catch (Exception error) {
+                removePdf(Uri.parse(value));
+            }
+        }
+        saved = preferences.getStringSet(LIBRARY_URIS, new HashSet<String>());
         ArrayList<String> books = new ArrayList<>(saved);
         Collections.sort(books);
         String lastPdf = preferences.getString(LAST_PDF, null);
@@ -726,7 +778,12 @@ public class MainActivity extends Activity {
     }
 
     private String displayName(Uri uri) {
-        String name = uri.getLastPathSegment();
+        String name = null;
+        try (android.database.Cursor cursor = getContentResolver().query(uri,
+                new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0);
+        } catch (Exception ignored) { }
+        if (name == null || name.length() == 0) name = uri.getLastPathSegment();
         if (name == null || name.length() == 0) name = "Untitled PDF";
         try { name = URLDecoder.decode(name, "UTF-8"); } catch (Exception ignored) { }
         return "▸  " + name;
@@ -768,6 +825,7 @@ public class MainActivity extends Activity {
             libraryPage.setVisibility(View.VISIBLE);
             readerBar.setVisibility(View.GONE);
             pdfPreview.setVisibility(View.GONE);
+            Toast.makeText(this, t("pdf_open_failed"), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -777,22 +835,36 @@ public class MainActivity extends Activity {
         if (currentUri != null) {
             preferences.edit().putInt(CollectionStorage.key(PAGE_PREFIX, currentUri), currentPage).apply();
         }
-        PdfRenderer.Page page = renderer.openPage(currentPage);
-        Bitmap bitmap = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2,
-                Bitmap.Config.ARGB_8888);
-        bitmap.eraseColor(Color.WHITE);
-        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-        page.close();
-        if (pageBitmap != null) pageBitmap.recycle();
-        pageBitmap = bitmap;
-        pdfPreview.setImageBitmap(pageBitmap);
-        pdfPreview.setColorFilter(isColorMode() ? null : eInkFilter());
-        if (pageLabel != null) pageLabel.setText((currentPage + 1) + " / " + renderer.getPageCount());
-        if (pageSeekBar != null) pageSeekBar.setProgress(currentPage);
-        pdfPreview.post(new Runnable() {
-            @Override public void run() { fitPage(); }
+        final int token = ++pageRenderToken;
+        final int requestedPage = currentPage;
+        pageExecutor.execute(() -> {
+            try {
+                PdfRenderer.Page page;
+                synchronized (MainActivity.this) {
+                    if (renderer == null || requestedPage >= renderer.getPageCount()) return;
+                    page = renderer.openPage(requestedPage);
+                }
+                Bitmap bitmap = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2,
+                        Bitmap.Config.ARGB_8888);
+                bitmap.eraseColor(Color.WHITE);
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                page.close();
+                mainHandler.post(() -> {
+                    if (token != pageRenderToken || renderer == null) { bitmap.recycle(); return; }
+                    if (pageBitmap != null) pageBitmap.recycle();
+                    pageBitmap = bitmap;
+                    pdfPreview.setImageBitmap(pageBitmap);
+                    pdfPreview.setColorFilter(isColorMode() ? null : eInkFilter());
+                    if (pageLabel != null) pageLabel.setText((requestedPage + 1) + " / " + renderer.getPageCount());
+                    if (pageSeekBar != null) pageSeekBar.setProgress(requestedPage);
+                    pdfPreview.post(this::fitPage);
+                    if (readerBar != null) readerBar.invalidate();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> Toast.makeText(this, t("pdf_page_failed"),
+                        Toast.LENGTH_SHORT).show());
+            }
         });
-        if (readerBar != null) readerBar.invalidate();
     }
 
     private void fitPage() {
@@ -1011,6 +1083,26 @@ public class MainActivity extends Activity {
         @Override public int getIntrinsicHeight() { return 20; }
     }
 
+    private static class ClearDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ClearDrawable() {
+            paint.setColor(Color.rgb(85, 82, 75));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2.2f);
+            setBounds(0, 0, 24, 24);
+        }
+        @Override public void draw(Canvas canvas) {
+            RectF b = new RectF(getBounds());
+            canvas.drawLine(b.left + 7, b.top + 7, b.right - 7, b.bottom - 7, paint);
+            canvas.drawLine(b.right - 7, b.top + 7, b.left + 7, b.bottom - 7, paint);
+        }
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) { paint.setColorFilter(filter); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+        @Override public int getIntrinsicWidth() { return 24; }
+        @Override public int getIntrinsicHeight() { return 24; }
+    }
+
     private void closeReader() {
         closePdf();
         readerBar.setVisibility(View.GONE);
@@ -1051,20 +1143,47 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        pageRenderToken++;
+        pageExecutor.shutdownNow();
         closePdf();
         if (pageBitmap != null) pageBitmap.recycle();
         super.onDestroy();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (collectionEditor) { finishCollectionEditor(false); return; }
+        if (collectionPickerPanel) { collectionPickerPanel = false; selectedCollectionBooks.clear(); refreshPanelDimming(); kindleHome.invalidate(); return; }
+        if (collectionActionPanel || settingsPanel || sortPanel || brightnessPanel) {
+            collectionActionPanel = false;
+            collectionColorPanel = false;
+            settingsPanel = false;
+            sortPanel = false;
+            brightnessPanel = false;
+            refreshPanelDimming();
+            kindleHome.invalidate();
+            return;
+        }
+        if (activeCollection != null) { activeCollection = null; homeContentOffset = 0; kindleHome.invalidate(); return; }
+        if (collectionMode) { collectionMode = false; allBooksMode = false; kindleHome.invalidate(); return; }
+        if (pdfPreview != null && pdfPreview.getVisibility() == View.VISIBLE) { closeReader(); return; }
+        super.onBackPressed();
+    }
+
     private void updateDim(int value) {
+        updateDim(value, true);
+    }
+
+    private void updateDim(int value, boolean persist) {
+        pendingDimValue = Math.max(0, Math.min(100, value));
         if (dimOverlay != null) {
-            dimOverlay.setAlpha(Math.min(0.88f, value / 100f * 0.88f));
+            dimOverlay.setAlpha(Math.min(0.88f, pendingDimValue / 100f * 0.88f));
         }
         if (amountLabel != null) {
-            amountLabel.setText(value + "%");
+            amountLabel.setText(pendingDimValue + "%");
         }
-        if (preferences != null) {
-            preferences.edit().putInt(DIM_LEVEL, value).apply();
+        if (persist && preferences != null) {
+            preferences.edit().putInt(DIM_LEVEL, pendingDimValue).apply();
         }
     }
 
@@ -1081,7 +1200,8 @@ public class MainActivity extends Activity {
     private void refreshPanelDimming() {
         boolean dimSearch = settingsPanel || sortPanel || brightnessPanel
                 || collectionActionPanel || collectionEditor || collectionPickerPanel;
-        if (searchBar != null) searchBar.setAlpha(dimSearch ? 0.58f : 1f);
+        if (searchBar != null) searchBar.setAlpha(1f);
+        if (panelDimOverlay != null) panelDimOverlay.setVisibility(dimSearch ? View.VISIBLE : View.GONE);
     }
 
     private void applyImmersiveMode() {
@@ -1526,11 +1646,11 @@ public class MainActivity extends Activity {
             paint.setColor(Color.argb(72, 40, 39, 35));
             canvas.drawRect(0, 0, width, height, paint);
             paint.setColor(Color.rgb(239, 237, 230));
-            canvas.drawRoundRect(new RectF(22, 72, width - 22, height - 28), 10, 10, paint);
-            drawText(canvas, t("add_from_library"), 46, 110, 21,
+            canvas.drawRoundRect(new RectF(22, 104, width - 22, height - 28), 10, 10, paint);
+            drawText(canvas, t("add_from_library"), 46, 142, 21,
                     Color.rgb(54, 53, 49), true);
             drawText(canvas, collectionPickerTarget == null ? "" : collectionPickerTarget,
-                    46, 137, 14, Color.rgb(112, 109, 101), false);
+                    46, 169, 14, Color.rgb(112, 109, 101), false);
             ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
                     new HashSet<String>()));
             Collections.sort(books, new Comparator<String>() {
@@ -1538,7 +1658,7 @@ public class MainActivity extends Activity {
                     return displayName(Uri.parse(a)).compareToIgnoreCase(displayName(Uri.parse(b)));
                 }
             });
-            int rowTop = 154;
+            int rowTop = 184;
             int listBottom = height - 104;
             int visibleHeight = Math.max(0, listBottom - rowTop);
             int maxOffset = Math.max(0, books.size() * 58 - visibleHeight);
@@ -1585,7 +1705,7 @@ public class MainActivity extends Activity {
             drawText(canvas, t("delete"), width - 256, collectionColorPanel ? 306 : 276,
                     17, Color.rgb(100, 62, 55), false);
             if (collectionColorPanel) {
-                int[] swatches = {Color.rgb(190, 207, 215), Color.rgb(218, 201, 165),
+                int[] swatches = {Color.rgb(218, 201, 165), Color.rgb(190, 207, 215),
                         Color.rgb(211, 191, 193), Color.rgb(196, 207, 182), Color.rgb(207, 196, 220)};
                 for (int i = 0; i < swatches.length; i++) {
                     paint.setColor(swatches[i]);
@@ -1713,6 +1833,8 @@ public class MainActivity extends Activity {
                 return true;
             }
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                searchBar.clearFocus();
+                root.requestFocus();
                 touchDownX = event.getX(); touchDownY = event.getY();
                 homeDragging = false;
                 collectionPickerDragging = false;
@@ -1723,7 +1845,7 @@ public class MainActivity extends Activity {
                 float y = event.getY() / density;
                 float height = getHeight() / density;
                 float delta = (event.getY() - touchDownY) / density;
-                if (y >= 154 && y < height - 104 && Math.abs(delta) > 2) {
+                if (y >= 184 && y < height - 104 && Math.abs(delta) > 12) {
                     ArrayList<String> books = new ArrayList<>(preferences.getStringSet(
                             LIBRARY_URIS, new HashSet<String>()));
                     int visibleHeight = Math.max(0, (int) height - 258);
@@ -1738,10 +1860,11 @@ public class MainActivity extends Activity {
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE && !collectionEditor
                     && !collectionActionPanel && !collectionPickerPanel && !settingsPanel
-                    && !sortPanel && !brightnessPanel && event.getY() > 160) {
+                    && !sortPanel && !brightnessPanel
+                    && event.getY() / getResources().getDisplayMetrics().density > 160) {
                 float density = getResources().getDisplayMetrics().density;
                 float delta = (event.getY() - touchDownY) / density;
-                if (Math.abs(delta) > 2) {
+                if (Math.abs(delta) > 12) {
                     homeContentOffset = Math.max(-homeMaxScroll(), Math.min(0,
                             homeContentOffset + delta));
                     touchDownY = event.getY();
@@ -1775,8 +1898,8 @@ public class MainActivity extends Activity {
                         }
                     });
                     int listBottom = (int) height - 104;
-                    if (y >= 154 && y < listBottom && x >= 34 && x <= width - 34) {
-                        int index = (int) ((y - collectionPickerOffset - 154) / 58);
+                    if (y >= 184 && y < listBottom && x >= 34 && x <= width - 34) {
+                        int index = (int) ((y - collectionPickerOffset - 184) / 58);
                         if (index >= 0 && index < pickerBooks.size()) {
                             String book = pickerBooks.get(index);
                             if (selectedCollectionBooks.contains(book)) selectedCollectionBooks.remove(book);
@@ -2101,10 +2224,10 @@ public class MainActivity extends Activity {
         brightness.setPadding(dp(20), dp(12), dp(20), dp(12));
         brightness.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                updateDim(value);
+                updateDim(value, false);
             }
             @Override public void onStartTrackingTouch(SeekBar bar) { }
-            @Override public void onStopTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { updateDim(bar.getProgress()); }
         });
         new AlertDialog.Builder(this).setTitle(t("brightness"))
                 .setMessage(t("brightness_hint"))
@@ -2221,6 +2344,8 @@ public class MainActivity extends Activity {
         if ("collection_hint".equals(key)) return english ? "Collection name" : "Koleksiyon adı";
         if ("save".equals(key)) return english ? "Save" : "Kaydet";
         if ("skip".equals(key)) return english ? "Skip" : "Atla";
+        if ("pdf_open_failed".equals(key)) return english ? "This PDF could not be opened." : "Bu PDF açılamadı.";
+        if ("pdf_page_failed".equals(key)) return english ? "This page could not be rendered." : "Bu sayfa görüntülenemedi.";
         if ("brightness".equals(key)) return english ? "Brightness" : "Parlaklık";
         if ("blue_light".equals(key)) return english ? "Warm light" : "Sarı ışık";
         if ("brightness_hint".equals(key)) return english ? "Adjust extra dim for comfortable reading." : "Rahat okuma için karartma seviyesini ayarla.";
@@ -2279,4 +2404,5 @@ public class MainActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 }
+
 
