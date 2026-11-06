@@ -85,7 +85,8 @@ public class MainActivity extends Activity {
     private String language;
     private FrameLayout setupOverlay;
     private FrameLayout root;
-    private KindleHomeView kindleHome;
+    private View kindleHome;
+    private ModernHomeView modernHome;
     private EditText searchBar;
     private SeekBar brightnessBar;
     private boolean collectionMode;
@@ -171,7 +172,8 @@ public class MainActivity extends Activity {
 
         libraryPage = new LinearLayout(this);
         libraryPage.setOrientation(LinearLayout.VERTICAL);
-        kindleHome = new KindleHomeView(this);
+        modernHome = new ModernHomeView(this);
+        kindleHome = modernHome;
         libraryPage.addView(kindleHome, new LinearLayout.LayoutParams(-1, -1));
         root.addView(libraryPage, new FrameLayout.LayoutParams(-1, -1));
 
@@ -1209,6 +1211,266 @@ public class MainActivity extends Activity {
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
         getWindow().getDecorView().setSystemUiVisibility(immersive ? flags : 0);
+    }
+
+    private ArrayList<String> modernBookUris(boolean all) {
+        ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                new HashSet<String>()));
+        final int mode = preferences.getInt(SORT_MODE, 2);
+        Collections.sort(books, (a, b) -> {
+            if (mode == 2) {
+                int recent = Long.compare(preferences.getLong(CollectionStorage.key(OPENED_PREFIX, b), 0L),
+                        preferences.getLong(CollectionStorage.key(OPENED_PREFIX, a), 0L));
+                if (recent != 0) return recent;
+            }
+            String an = displayName(Uri.parse(a)).toLowerCase(Locale.getDefault());
+            String bn = displayName(Uri.parse(b)).toLowerCase(Locale.getDefault());
+            return mode == 1 ? bn.compareTo(an) : an.compareTo(bn);
+        });
+        String query = searchBar == null ? "" : searchBar.getText().toString().trim().toLowerCase(Locale.getDefault());
+        ArrayList<String> result = new ArrayList<>();
+        for (String book : books) {
+            if (activeCollection != null && !activeCollection.equals(collectionForBook(book))) continue;
+            if (query.length() > 0 && !displayName(Uri.parse(book)).toLowerCase(Locale.getDefault()).contains(query)) continue;
+            result.add(book);
+        }
+        if (!all && result.size() > 6) return new ArrayList<>(result.subList(0, 6));
+        return result;
+    }
+
+    private String modernQuery() {
+        return searchBar == null ? "" : searchBar.getText().toString().trim().toLowerCase(Locale.getDefault());
+    }
+
+    private void confirmRemovePdf(Uri uri) {
+        new AlertDialog.Builder(this)
+                .setTitle(t("remove_book"))
+                .setMessage(displayName(uri))
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("delete"), (dialog, which) -> { removePdf(uri); if (modernHome != null) modernHome.rebuild(); })
+                .show();
+    }
+
+    private void showModernCollectionActions(String name) {
+        String[] options = {t("rename"), t("folder_color"), t("delete")};
+        new AlertDialog.Builder(this).setTitle(name).setItems(options, (dialog, which) -> {
+            if (which == 0) showCollectionEditor(name);
+            else if (which == 1) showModernColorDialog(name);
+            else confirmDeleteCollection(name);
+        }).show();
+    }
+
+    private void showModernColorDialog(String name) {
+        String[] colors = {"Bej", "Mavi", "Pembe", "Yeşil", "Mor"};
+        int selected = preferences.getInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX, name), 0);
+        new AlertDialog.Builder(this).setTitle(t("folder_color"))
+                .setSingleChoiceItems(colors, selected, (dialog, which) -> {
+                    preferences.edit().putInt(CollectionStorage.key(COLLECTION_COLOR_PREFIX, name), which).apply();
+                    dialog.dismiss();
+                    if (modernHome != null) modernHome.rebuild();
+                }).show();
+    }
+
+    private void showModernCollectionPicker(String target) {
+        ArrayList<String> books = new ArrayList<>(preferences.getStringSet(LIBRARY_URIS,
+                new HashSet<String>()));
+        Collections.sort(books, (a, b) -> displayName(Uri.parse(a)).compareToIgnoreCase(displayName(Uri.parse(b))));
+        String[] labels = new String[books.size()];
+        boolean[] checked = new boolean[books.size()];
+        for (int i = 0; i < books.size(); i++) {
+            labels[i] = displayName(Uri.parse(books.get(i))).replace("▸  ", "");
+            checked[i] = target.equals(collectionForBook(books.get(i)));
+        }
+        new AlertDialog.Builder(this).setTitle(t("add_from_library"))
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("save"), (dialog, which) -> {
+                    SharedPreferences.Editor editor = preferences.edit();
+                    for (int i = 0; i < books.size(); i++) {
+                        if (checked[i]) editor.putString(CollectionStorage.key(COLLECTION_PREFIX, books.get(i)), target);
+                        else if (target.equals(collectionForBook(books.get(i)))) editor.remove(CollectionStorage.key(COLLECTION_PREFIX, books.get(i)));
+                    }
+                    editor.apply();
+                    if (modernHome != null) modernHome.rebuild();
+                }).show();
+    }
+
+    private void showSettingsDialog() {
+        String[] options = {t("language"), t("colors"), t("fullscreen")};
+        new AlertDialog.Builder(this).setTitle(t("settings")).setItems(options, (dialog, which) -> {
+            if (which == 0) showLanguageDialog();
+            else if (which == 1) {
+                String[] colors = {t("mono_color"), t("color_color")};
+                int selected = isColorMode() ? 1 : 0;
+                new AlertDialog.Builder(this).setTitle(t("colors")).setSingleChoiceItems(colors, selected, (d, item) -> {
+                    preferences.edit().putString(COLOR_MODE, item == 1 ? "color" : "mono").apply();
+                    d.dismiss();
+                    if (modernHome != null) modernHome.rebuild();
+                }).show();
+            } else { immersive = !immersive; applyImmersiveMode(); }
+        }).show();
+    }
+
+    private class ModernHomeView extends android.widget.ScrollView {
+        private final LinearLayout content = new LinearLayout(MainActivity.this);
+        private boolean rebuilding;
+
+        ModernHomeView(android.content.Context context) {
+            super(context);
+            setFillViewport(true);
+            setBackgroundColor(Color.rgb(232, 230, 222));
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(dp(24), dp(104), dp(24), dp(28));
+            addView(content, new android.widget.ScrollView.LayoutParams(-1, -2));
+            post(this::rebuild);
+        }
+
+        @Override public void invalidate() {
+            super.invalidate();
+            if (!rebuilding) post(this::rebuild);
+        }
+
+        private TextView label(String value, int size, boolean bold) {
+            TextView v = text(value, size, Color.rgb(58, 53, 45));
+            v.setTypeface(Typeface.DEFAULT, bold ? Typeface.BOLD : Typeface.NORMAL);
+            v.setPadding(0, dp(4), 0, dp(4));
+            return v;
+        }
+
+        private Button action(String value) {
+            Button b = button(value);
+            b.setAllCaps(false);
+            b.setMinHeight(0);
+            b.setMinimumHeight(0);
+            b.setPadding(dp(10), 0, dp(10), 0);
+            return b;
+        }
+
+        void rebuild() {
+            if (rebuilding || content == null) return;
+            rebuilding = true;
+            content.removeAllViews();
+
+            LinearLayout top = new LinearLayout(MainActivity.this);
+            top.setGravity(Gravity.CENTER_VERTICAL);
+            TextView title = label("FOLIO", 24, true);
+            top.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+            Button light = action("☼");
+            light.setOnClickListener(v -> showBrightnessDialog());
+            top.addView(light, new LinearLayout.LayoutParams(dp(52), dp(48)));
+            Button add = action("+");
+            add.setOnClickListener(v -> pickPdf());
+            top.addView(add, new LinearLayout.LayoutParams(dp(52), dp(48)));
+            Button settings = action("⚙");
+            settings.setOnClickListener(v -> showSettingsDialog());
+            top.addView(settings, new LinearLayout.LayoutParams(dp(58), dp(48)));
+            content.addView(top);
+
+            TextView subtitle = label(t("pick_up"), 15, false);
+            subtitle.setTextColor(Color.rgb(112, 105, 94));
+            content.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(36)));
+
+            LinearLayout tabs = new LinearLayout(MainActivity.this);
+            tabs.setGravity(Gravity.CENTER_VERTICAL);
+            Button recent = action(t("books"));
+            recent.setOnClickListener(v -> { collectionMode = false; allBooksMode = false; activeCollection = null; rebuild(); });
+            Button all = action(t("all_books"));
+            all.setOnClickListener(v -> { collectionMode = false; allBooksMode = true; activeCollection = null; rebuild(); });
+            Button folders = action(t("collections"));
+            folders.setOnClickListener(v -> { collectionMode = true; allBooksMode = false; activeCollection = null; rebuild(); });
+            tabs.addView(recent, new LinearLayout.LayoutParams(0, dp(46), 1));
+            tabs.addView(all, new LinearLayout.LayoutParams(0, dp(46), 1));
+            tabs.addView(folders, new LinearLayout.LayoutParams(0, dp(46), 1));
+            content.addView(tabs);
+
+            LinearLayout tools = new LinearLayout(MainActivity.this);
+            tools.setGravity(Gravity.CENTER_VERTICAL);
+            TextView mode = label(collectionMode ? t("collections") : (allBooksMode ? t("all_books") : t("recent_books")), 18, true);
+            tools.addView(mode, new LinearLayout.LayoutParams(0, dp(46), 1));
+            Button sort = action(t("filter"));
+            sort.setOnClickListener(v -> showSortDialog());
+            tools.addView(sort, new LinearLayout.LayoutParams(dp(100), dp(46)));
+            content.addView(tools);
+
+            if (collectionMode) buildCollections();
+            else buildBooks();
+            rebuilding = false;
+        }
+
+        private void buildBooks() {
+            ArrayList<String> books = modernBookUris(allBooksMode);
+            if (books.isEmpty()) {
+                content.addView(label(modernQuery().length() == 0 ? t("empty_library") : t("no_search_results"), 17, false));
+                Button add = action("+  " + t("open_pdf"));
+                add.setOnClickListener(v -> pickPdf());
+                content.addView(add, new LinearLayout.LayoutParams(-1, dp(54)));
+                return;
+            }
+            for (String value : books) addBookCard(value);
+        }
+
+        private void addBookCard(String value) {
+            LinearLayout card = new LinearLayout(MainActivity.this);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setPadding(dp(14), dp(8), dp(6), dp(8));
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(Color.rgb(244, 242, 235));
+            background.setStroke(dp(1), Color.rgb(193, 189, 178));
+            background.setCornerRadius(dp(6));
+            card.setBackground(background);
+            TextView title = label(displayName(Uri.parse(value)).replace("▸  ", ""), 16, true);
+            title.setSingleLine(true);
+            card.addView(title, new LinearLayout.LayoutParams(0, dp(56), 1));
+            Button remove = action("×");
+            remove.setOnClickListener(v -> confirmRemovePdf(Uri.parse(value)));
+            card.addView(remove, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            card.setOnClickListener(v -> tryOpenPdf(Uri.parse(value)));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(72));
+            params.bottomMargin = dp(8);
+            content.addView(card, params);
+        }
+
+        private void buildCollections() {
+            if (activeCollection != null) {
+                Button back = action("‹  " + activeCollection);
+                back.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+                back.setOnClickListener(v -> { activeCollection = null; rebuild(); });
+                content.addView(back, new LinearLayout.LayoutParams(-1, dp(50)));
+                Button add = action("+  " + t("add_from_library"));
+                add.setOnClickListener(v -> showModernCollectionPicker(activeCollection));
+                content.addView(add, new LinearLayout.LayoutParams(-1, dp(50)));
+                for (String value : modernBookUris(true)) addBookCard(value);
+                return;
+            }
+            Button create = action("+  " + t("new_collection"));
+            create.setOnClickListener(v -> showNewCollectionDialog());
+            content.addView(create, new LinearLayout.LayoutParams(-1, dp(50)));
+            ArrayList<String> names = collectionNamesForModern();
+            if (names.isEmpty()) content.addView(label(t("empty_collections"), 17, false));
+            for (String name : names) {
+                LinearLayout row = new LinearLayout(MainActivity.this);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                TextView folder = label("▰  " + name, 17, true);
+                row.addView(folder, new LinearLayout.LayoutParams(0, dp(58), 1));
+                Button menu = action("⋯");
+                menu.setOnClickListener(v -> showModernCollectionActions(name));
+                row.addView(menu, new LinearLayout.LayoutParams(dp(56), dp(48)));
+                row.setOnClickListener(v -> { activeCollection = name; rebuild(); });
+                content.addView(row, new LinearLayout.LayoutParams(-1, dp(62)));
+            }
+        }
+
+        private ArrayList<String> collectionNamesForModern() {
+            ArrayList<String> result = new ArrayList<>(preferences.getStringSet(COLLECTIONS, new HashSet<String>()));
+            String query = modernQuery();
+            if (query.length() > 0) {
+                ArrayList<String> filtered = new ArrayList<>();
+                for (String name : result) if (name.toLowerCase(Locale.getDefault()).contains(query)) filtered.add(name);
+                result = filtered;
+            }
+            Collections.sort(result);
+            return result;
+        }
     }
 
     private class KindleHomeView extends View {
@@ -2344,6 +2606,7 @@ public class MainActivity extends Activity {
         if ("collection_hint".equals(key)) return english ? "Collection name" : "Koleksiyon adı";
         if ("save".equals(key)) return english ? "Save" : "Kaydet";
         if ("skip".equals(key)) return english ? "Skip" : "Atla";
+        if ("remove_book".equals(key)) return english ? "Remove book?" : "Kitap kaldırılsın mı?";
         if ("pdf_open_failed".equals(key)) return english ? "This PDF could not be opened." : "Bu PDF açılamadı.";
         if ("pdf_page_failed".equals(key)) return english ? "This page could not be rendered." : "Bu sayfa görüntülenemedi.";
         if ("brightness".equals(key)) return english ? "Brightness" : "Parlaklık";
